@@ -1,0 +1,5 @@
+{
+  "rows": 1000,
+  "model": "text-embedding-3-small",
+  "source": "imdb_top_1000.csv"
+}

@@ -1,54 +1,73 @@
 # IMDB Voice Assistant
 
-A local-first GenAI voice agent that answers questions about the IMDB dataset using structured retrieval plus semantic similarity search over plot overviews.
+Gen-AI conversational voice agent over the IMDB Top 1000 dataset. Supports text + voice input, semantic plot search, and recommendations.
 
-## Features
-- Structured filters and ranking (year ranges, ratings, votes, gross, director aggregates)
-- Semantic similarity search on `Overview` for plot-based queries
-- Hybrid mode (filters + similarity)
-- Streamlit chat UI with audio input, transcription, and optional TTS
-- Optional result table and reasoning display
+## Stack
+
+- UI: Streamlit
+- Chat model: `gpt-4o-mini`
+- Embeddings: `text-embedding-3-small`
+- Speech-to-text: OpenAI Whisper (`whisper-1`)
+- Text-to-speech: OpenAI TTS (`tts-1`)
+
+## Project Structure
+
+- `app.py` - Streamlit app
+- `imdb_top_1000.csv` - Dataset
+- `build_index.py` - Builds local embeddings file
+- `data/imdb_embeddings.npz` - Local vector store (generated)
+- `data/imdb_embeddings_meta.json` - Vector store metadata (generated)
 
 ## Setup
 
-```bash
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-```
+1. Create a virtual environment and install dependencies:
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install -r requirements.txt
+   ```
+2. Copy `.env.example` to `.env` and add your OpenAI key:
+   ```bash
+   cp .env.example .env
+   ```
 
-Configure environment — create a `.env` file in the project root:
+## Build the Vector Store
 
-```bash
-OPENAI_API_KEY=sk-your-key-here
-```
+Run one of the following:
 
-Required variable:
-- `OPENAI_API_KEY` – your OpenAI API key (never commit this)
+- From CLI:
+  ```bash
+  python3 build_index.py
+  ```
+- Or click **Build embeddings** inside the Streamlit app.
 
-Optional overrides (sensible defaults are used):
-- `OPENAI_MODEL` – chat model (default: `gpt-4o-mini`)
-- `OPENAI_EMBEDDING_MODEL` – embedding model (default: `text-embedding-3-small`)
-- `OPENAI_STT_MODEL` – speech-to-text (default: `whisper-1`)
-- `OPENAI_TTS_MODEL` – text-to-speech (default: `tts-1`)
+This generates:
 
-## Data
-Place the IMDB dataset CSV at `data/imdb.csv`.
+- `data/imdb_embeddings.npz`
+- `data/imdb_embeddings_meta.json`
 
-## Build the vector index (one-time)
+If you are sharing via GitHub, commit these generated files so reviewers can test without rebuilding.
 
-```bash
-python -m src.build_index
-```
-
-## Run the app
+## Run the App
 
 ```bash
 streamlit run app.py
 ```
 
+## Example Questions
+
+- When did The Matrix release?
+- What are the top 5 movies of 2019 by meta score?
+- Top 7 comedy movies between 2010-2020 by IMDB rating?
+- Top horror movies with a meta score above 85 and IMDB rating above 8
+- Top directors and their highest grossing movies with gross earnings of greater than 500M at least twice
+- Top 10 movies with over 1M votes but lower gross earnings
+- List of movies from the comedy genre where there is death or dead people involved
+- Summarize the movie plots of Steven Spielberg’s top-rated sci-fi movies
+- List of movies before 1990 that have involvement of police in the plot
+
 ## Notes
-- The local vector store files are saved to `vectorstore/imdb_faiss.index` and `vectorstore/imdb_metadata.pkl`.
-- If those files are missing, semantic queries will be unavailable. For a GitHub link, either commit `vectorstore/` or run `python -m src.build_index`.
-- For a zip delivery, include `vectorstore/` alongside the codebase.
-- Voice features require OpenAI audio endpoints.
+
+- Voice input uses `st.audio_input`; allow microphone access in your browser.
+- Recommendations are derived from embedding similarity to top results.
+- If embeddings are missing, the app will prompt to build them.
