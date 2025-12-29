@@ -9,7 +9,7 @@ class SpeechClient:
     def __init__(self) -> None:
         if not OPENAI_API_KEY:
             raise RuntimeError("OPENAI_API_KEY is not set")
-        self.client = OpenAI(api_key=OPENAI_API_KEY)
+        self.client = OpenAI(api_key=OPENAI_API_KEY, timeout=30)
 
     def transcribe(self, audio_bytes: bytes, filename: str = "audio.wav") -> str:
         if not audio_bytes:

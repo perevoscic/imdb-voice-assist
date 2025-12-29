@@ -9,7 +9,7 @@ class ResponseGenerator:
     def __init__(self) -> None:
         if not OPENAI_API_KEY:
             raise RuntimeError("OPENAI_API_KEY is not set")
-        self.client = OpenAI(api_key=OPENAI_API_KEY)
+        self.client = OpenAI(api_key=OPENAI_API_KEY, timeout=30)
 
     def generate(
         self,
@@ -17,6 +17,7 @@ class ResponseGenerator:
         results: List[Dict[str, Any]],
         reasoning: List[str],
         recommendations: Optional[List[Dict[str, Any]]] = None,
+        needs_plot_summary: bool = False,
     ) -> str:
         user_lower = user_text.lower()
         if (
@@ -33,7 +34,8 @@ class ResponseGenerator:
             except (TypeError, ValueError):
                 return f"I couldn't find the release year for {title}."
         summary_lines = []
-        for item in results[:8]:
+        overview_lines = []
+        for idx, item in enumerate(results[:8]):
             title = item.get("Series_Title", "Unknown")
             year = item.get("Released_Year", "")
             try:
@@ -45,6 +47,10 @@ class ResponseGenerator:
             summary_lines.append(
                 f"- {title} ({year_display}) | IMDB {rating} | Meta {meta}"
             )
+            if needs_plot_summary and idx < 5:
+                overview = item.get("Overview", "")
+                if overview:
+                    overview_lines.append(f"- {title}: {overview}")
 
         rec_lines = []
         if recommendations:
@@ -65,6 +71,7 @@ class ResponseGenerator:
 You are a movie assistant. Provide a concise conversational answer.
 Include a short reasoning sentence based on the provided reasoning list.
 If recommendations are provided, add a "Similar movies" section.
+If plot summaries are requested, summarize each movie in 1-2 sentences.
 """.strip()
 
         content = [
@@ -73,8 +80,13 @@ If recommendations are provided, add a "Similar movies" section.
             "\n".join(summary_lines) if summary_lines else "(no results)",
             f"Reasoning signals: {', '.join(reasoning)}",
         ]
+        if needs_plot_summary:
+            content.append(
+                "Plot overviews:\n"
+                + ("\n".join(overview_lines) if overview_lines else "(no overviews)")
+            )
         if rec_lines:
-            content.append("Recommendations:\n" + "\n".join(rec_lines))
+            content.append("Recommendations (ratings-aware):\n" + "\n".join(rec_lines))
 
         resp = self.client.chat.completions.create(
             model=OPENAI_MODEL,

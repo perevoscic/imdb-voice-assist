@@ -28,6 +28,4 @@ Thumbs.db
 # Node
 node_modules/
 
-# Vector store (can be regenerated)
-vectorstore/
-
+# Vector store (share for reviewers if required)

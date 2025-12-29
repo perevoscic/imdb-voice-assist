@@ -17,7 +17,7 @@ class SemanticEngine:
     def __init__(self) -> None:
         if not OPENAI_API_KEY:
             raise RuntimeError("OPENAI_API_KEY is not set")
-        self.client = OpenAI(api_key=OPENAI_API_KEY)
+        self.client = OpenAI(api_key=OPENAI_API_KEY, timeout=30)
         self.index = faiss.read_index(str(FAISS_INDEX_PATH))
         with open(METADATA_PATH, "rb") as f:
             self.metadata: List[Dict[str, Any]] = pickle.load(f)

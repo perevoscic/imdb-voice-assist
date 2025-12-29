@@ -65,6 +65,20 @@ def apply_filters(df: pd.DataFrame, filters: Dict[str, Any]) -> Tuple[pd.DataFra
         out = out[out["Series_Title"].str.contains(title, case=False, na=False)]
         reasoning.append(f"Series_Title contains {title}")
 
+    actor = filters.get("actor")
+    if actor:
+        actor_role = filters.get("actor_role", "any")
+        if actor_role == "lead":
+            out = out[out["Star1"].str.contains(actor, case=False, na=False)]
+            reasoning.append(f"Star1 contains {actor}")
+        else:
+            out = out[
+                out[["Star1", "Star2", "Star3", "Star4"]]
+                .fillna("")
+                .apply(lambda row: row.str.contains(actor, case=False).any(), axis=1)
+            ]
+            reasoning.append(f"Stars contain {actor}")
+
     return out, reasoning
 
 
@@ -110,3 +124,26 @@ def run_structured_query(df: pd.DataFrame, query: StructuredQuery) -> Tuple[pd.D
         sorted_df = sorted_df.head(query.limit)
         reasoning.append(f"limit {query.limit}")
     return sorted_df, reasoning
+
+
+def director_top_gross_with_min_count(
+    df: pd.DataFrame, gross_min: float, min_count: int
+) -> Tuple[pd.DataFrame, List[str]]:
+    reasoning = [
+        f"Gross_num >= {gross_min}",
+        f"directors with at least {min_count} qualifying movies",
+    ]
+    working = df[df["Gross_num"] >= gross_min].copy()
+    if working.empty:
+        return working, reasoning
+
+    counts = working.groupby("Director").size().reset_index(name="qualifying_count")
+    qualifying = counts[counts["qualifying_count"] >= min_count]
+    if qualifying.empty:
+        return qualifying, reasoning
+
+    merged = working.merge(qualifying[["Director"]], on="Director", how="inner")
+    idx = merged.groupby("Director")["Gross_num"].idxmax()
+    top_rows = merged.loc[idx].copy()
+    top_rows = top_rows.sort_values(by="Gross_num", ascending=False)
+    return top_rows, reasoning
