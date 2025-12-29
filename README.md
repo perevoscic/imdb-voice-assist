@@ -5,6 +5,7 @@ Gen-AI conversational voice agent over the IMDB Top 1000 dataset. Supports text 
 ## Stack
 
 - UI: Streamlit
+- Realtime voice: `streamlit-webrtc`
 - Chat model: `gpt-4o-mini`
 - Embeddings: `text-embedding-3-small`
 - Speech-to-text: OpenAI Whisper (`whisper-1`)
@@ -69,5 +70,6 @@ streamlit run app.py
 ## Notes
 
 - Voice input uses `st.audio_input`; allow microphone access in your browser.
+- Realtime voice streaming uses `streamlit-webrtc`; allow microphone access and pick **Realtime (WebRTC)** in the sidebar.
 - Recommendations are derived from embedding similarity to top results.
 - If embeddings are missing, the app will prompt to build them.

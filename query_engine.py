@@ -1,6 +1,7 @@
 import json
 import os
 import re
+from difflib import SequenceMatcher
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -36,24 +37,324 @@ def parse_top_n(query: str, default: int = 5) -> int:
     return default
 
 
+STOPWORDS = {"the", "a", "an", "of", "and", "to", "in", "for"}
+
+
+def _normalize(text: str) -> List[str]:
+    cleaned = re.sub(r"[^a-z0-9\\s]", " ", text.lower())
+    return [token for token in cleaned.split() if token]
+
+
 def find_title_match(df: pd.DataFrame, query: str) -> Optional[str]:
     lowered = query.lower()
     titles = df["Series_Title"].dropna().astype(str).tolist()
     matches = [title for title in titles if title.lower() in lowered]
-    if not matches:
-        return None
-    return max(matches, key=len)
+    if matches:
+        return max(matches, key=len)
+
+    query_tokens = set(_normalize(query))
+    candidates = []
+    for title in titles:
+        title_tokens = [t for t in _normalize(title) if t not in STOPWORDS]
+        if not title_tokens:
+            continue
+        if set(title_tokens).issubset(query_tokens):
+            candidates.append(title)
+    if candidates:
+        return max(candidates, key=len)
+
+    normalized_query = " ".join(_normalize(query))
+    best_title = None
+    best_score = 0.0
+    for title in titles:
+        normalized_title = " ".join(_normalize(title))
+        if not normalized_title:
+            continue
+        score = SequenceMatcher(None, normalized_title, normalized_query).ratio()
+        if score > best_score:
+            best_score = score
+            best_title = title
+    if best_score >= 0.6:
+        return best_title
+    return None
 
 
-def needs_al_pacino_clarification(query: str) -> bool:
+def parse_years(query: str) -> Tuple[Optional[int], Optional[int]]:
+    years = [int(y) for y in re.findall(r"(19\\d{2}|20\\d{2})", query)]
+    if not years:
+        return None, None
+    if len(years) == 1:
+        return years[0], years[0]
+    return min(years), max(years)
+
+
+def parse_threshold(query: str, field: str) -> Optional[int]:
+    pattern = rf"{field}\\s*(?:above|over|>=|greater than)\\s*(\\d+)"
+    match = re.search(pattern, query.lower())
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def parse_genre(query: str) -> Optional[str]:
+    genres = [
+        "comedy",
+        "horror",
+        "sci-fi",
+        "drama",
+        "action",
+        "romance",
+        "thriller",
+        "crime",
+        "adventure",
+        "animation",
+        "fantasy",
+        "mystery",
+    ]
     lowered = query.lower()
-    if "al pacino" not in lowered:
-        return False
-    if "lead" in lowered or "star1" in lowered or "primary" in lowered:
-        return False
-    if "support" in lowered or "supporting" in lowered or "any role" in lowered:
-        return False
-    return True
+    for genre in genres:
+        if genre in lowered:
+            return genre
+    return None
+
+
+def parse_director(query: str, df: pd.DataFrame) -> Optional[str]:
+    """Extract director name from query if present in the dataset."""
+    lowered = query.lower()
+    # Check for "directed by X" or "director X" or "by X" patterns
+    patterns = [
+        r"directed by\s+([a-z\s]+?)(?:\?|$|,|\.|movies|films)",
+        r"director\s+([a-z\s]+?)(?:\?|$|,|\.|movies|films)",
+        r"([a-z\s]+?)(?:'s|s')\s+(?:movies|films|directed)",
+        r"movies\s+(?:by|from)\s+([a-z\s]+?)(?:\?|$|,|\.)",
+        r"films\s+(?:by|from)\s+([a-z\s]+?)(?:\?|$|,|\.)",
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, lowered)
+        if match:
+            potential_name = match.group(1).strip()
+            # Verify this name exists in our director column
+            directors = df["Director_Lower"].dropna().unique()
+            for director in directors:
+                if potential_name in director or director in potential_name:
+                    return director
+    
+    # Fallback: check if any known director name appears in the query
+    directors = df["Director_Lower"].dropna().unique()
+    for director in directors:
+        # Require at least first and last name match (2+ words)
+        director_parts = director.split()
+        if len(director_parts) >= 2:
+            if director in lowered:
+                return director
+    
+    return None
+
+
+def parse_actor(query: str, df: pd.DataFrame) -> Optional[str]:
+    """Extract actor name from query if present in the dataset (Star1-Star4 columns)."""
+    lowered = query.lower()
+    
+    # Check for actor-related patterns
+    patterns = [
+        r"(?:starring|with|featuring)\s+([a-z\s]+?)(?:\?|$|,|\.|movies|films|as)",
+        r"([a-z\s]+?)\s+(?:movies|films|starred|stars)",
+        r"movies\s+(?:with|starring|featuring)\s+([a-z\s]+?)(?:\?|$|,|\.)",
+        r"films\s+(?:with|starring|featuring)\s+([a-z\s]+?)(?:\?|$|,|\.)",
+        r"([a-z\s]+?)\s+as\s+(?:lead|main|star)",
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, lowered)
+        if match:
+            potential_name = match.group(1).strip()
+            # Verify this name exists in our Stars_Lower column
+            for _, row in df.iterrows():
+                stars_lower = str(row.get("Stars_Lower", "")).lower()
+                if potential_name in stars_lower:
+                    # Find the exact actor name from Star1-4
+                    for star_col in ["Star1", "Star2", "Star3", "Star4"]:
+                        star_val = str(row.get(star_col, "")).lower()
+                        if potential_name in star_val:
+                            return star_val
+    
+    # Fallback: check if any known actor name (2+ words) appears in the query
+    # Build a set of unique actors from Star1-4
+    all_actors = set()
+    for star_col in ["Star1", "Star2", "Star3", "Star4"]:
+        actors = df[star_col].dropna().astype(str).str.lower().unique()
+        all_actors.update(actors)
+    
+    for actor in all_actors:
+        actor_parts = actor.split()
+        if len(actor_parts) >= 2:
+            if actor in lowered:
+                return actor
+    
+    return None
+
+
+def format_conversation_history(messages: List[Dict], max_turns: int = 5) -> str:
+    """Format recent conversation history for LLM context."""
+    if not messages:
+        return ""
+    
+    # Get last N turns (user + assistant pairs)
+    recent = messages[-(max_turns * 2):]
+    
+    formatted = []
+    for msg in recent:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        if content:
+            formatted.append(f"{role.upper()}: {content}")
+    
+    return "\n".join(formatted)
+
+
+def check_needs_clarification(
+    client: OpenAI,
+    query: str,
+    conversation_history: List[Dict],
+    df: pd.DataFrame,
+) -> Optional[str]:
+    """
+    Use LLM to determine if the query needs clarification.
+    Returns the clarification question if needed, None otherwise.
+    """
+    history_str = format_conversation_history(conversation_history)
+    
+    # Get some context about available data
+    genres = df["Genre"].dropna().unique()[:10].tolist()
+    directors = df["Director"].dropna().unique()[:20].tolist()
+    
+    # Get the actual year range from the data
+    years = df["Released_Year"].dropna()
+    min_year = int(years.min()) if len(years) > 0 else 1920
+    max_year = int(years.max()) if len(years) > 0 else 2020
+    
+    system = """You analyze movie database queries to determine if clarification is needed.
+
+IMPORTANT DATA CONTEXT:
+- The movie database contains films from {min_year} to {max_year}
+- When NO specific year or time period is mentioned, ALWAYS use the FULL available range ({min_year}-{max_year})
+- NEVER ask clarifying questions about time periods, years, or date ranges
+- Terms like "lower gross", "highest rated", "best", etc. should be applied across ALL available data unless a specific period is mentioned
+
+Do NOT ask for clarification about:
+1. Time periods, years, or date ranges - use full range {min_year}-{max_year} by default
+2. "Lower" or "higher" comparisons - apply to all data
+3. Queries that can be answered with reasonable defaults
+
+Only ask for clarification if:
+1. The query is genuinely ambiguous in a way that cannot be resolved with defaults
+2. Multiple completely different interpretations exist that would give very different results
+
+Available genres include: {genres}
+Some directors in the database: {directors}
+
+Respond with JSON only:
+{{
+    "needs_clarification": true/false,
+    "clarification_question": "question to ask" or null,
+    "reasoning": "brief explanation"
+}}"""
+
+    user_prompt = f"""Conversation history:
+{history_str if history_str else "(No previous conversation)"}
+
+Current query: {query}
+
+Does this query need clarification before I can search the movie database?"""
+
+    try:
+        response = client.chat.completions.create(
+            model=os.getenv("CHAT_MODEL", "gpt-4o-mini"),
+            messages=[
+                {"role": "system", "content": system.format(
+                    genres=genres, 
+                    directors=directors,
+                    min_year=min_year,
+                    max_year=max_year
+                )},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0,
+        )
+        content = response.choices[0].message.content
+        result = json.loads(_clean_json(content))
+        
+        if result.get("needs_clarification"):
+            return result.get("clarification_question")
+        return None
+    except Exception:
+        return None
+
+
+def resolve_references(
+    client: OpenAI,
+    query: str,
+    conversation_history: List[Dict],
+) -> str:
+    """
+    Resolve pronouns and references in the query using conversation history.
+    Returns the resolved query.
+    """
+    if not conversation_history:
+        return query
+    
+    history_str = format_conversation_history(conversation_history)
+    
+    # Quick check if resolution is likely needed
+    reference_indicators = [
+        "that movie", "that film", "this movie", "this film",
+        "those movies", "these movies", "the same", "similar",
+        "his", "her", "their", "its", "he", "she", "they",
+        "more about", "tell me more", "what else", "another",
+        "the director", "the actor", "the cast", "it", "them"
+    ]
+    
+    query_lower = query.lower()
+    needs_resolution = any(ref in query_lower for ref in reference_indicators)
+    
+    if not needs_resolution:
+        return query
+    
+    system = """You resolve references in movie queries using conversation history.
+
+Your task: Rewrite the query to be self-contained by replacing pronouns and references 
+with the actual entities they refer to from the conversation.
+
+Rules:
+1. If a reference is clear from history, replace it with the actual name/title
+2. If a reference is unclear, keep the original wording
+3. Preserve the user's intent and question type
+4. Return ONLY the rewritten query, nothing else
+5. If no resolution is needed, return the original query unchanged"""
+
+    user_prompt = f"""Conversation history:
+{history_str}
+
+Current query: {query}
+
+Rewritten query (self-contained):"""
+
+    try:
+        response = client.chat.completions.create(
+            model=os.getenv("CHAT_MODEL", "gpt-4o-mini"),
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0,
+        )
+        resolved = response.choices[0].message.content.strip()
+        # Remove quotes if the LLM wrapped the response
+        resolved = resolved.strip('"\'')
+        return resolved if resolved else query
+    except Exception:
+        return query
 
 
 def apply_filters(df: pd.DataFrame, filters: List[Dict]) -> pd.DataFrame:
@@ -84,7 +385,15 @@ def apply_filters(df: pd.DataFrame, filters: List[Dict]) -> pd.DataFrame:
     return filtered
 
 
-def plan_query_with_llm(client: OpenAI, query: str) -> QueryPlan:
+def plan_query_with_llm(
+    client: OpenAI,
+    query: str,
+    conversation_history: Optional[List[Dict]] = None,
+    min_year: int = 1920,
+    max_year: int = 2020,
+) -> QueryPlan:
+    history_str = format_conversation_history(conversation_history or [])
+    
     system = (
         "You plan queries over a pandas dataframe of IMDB movies. "
         "Return JSON only. Fields: action (filter_sort|semantic_search|hybrid), "
@@ -92,13 +401,23 @@ def plan_query_with_llm(client: OpenAI, query: str) -> QueryPlan:
         "limit (int), text_query (string or null). "
         "Columns: Series_Title, Released_Year, Certificate, Runtime_Min, Genre, "
         "IMDB_Rating, Overview, Meta_score, Director, Star1-4, No_of_votes, Gross, "
-        "Title_Lower, Genre_Lower, Director_Lower, Overview_Lower, Stars_Lower.")
-    user = f"Query: {query}"
+        "Title_Lower, Genre_Lower, Director_Lower, Overview_Lower, Stars_Lower. "
+        "Use conversation history to understand context and resolve any references. "
+        f"IMPORTANT: The database contains movies from {min_year} to {max_year}. "
+        "When NO specific year or time period is mentioned in the query, "
+        f"use the FULL available range ({min_year}-{max_year}). "
+        "Do NOT add year filters unless the user explicitly specifies a time period."
+    )
+    
+    user_content = f"Query: {query}"
+    if history_str:
+        user_content = f"Conversation history:\n{history_str}\n\nCurrent query: {query}"
+    
     response = client.chat.completions.create(
         model=os.getenv("CHAT_MODEL", "gpt-4o-mini"),
         messages=[
             {"role": "system", "content": system},
-            {"role": "user", "content": user},
+            {"role": "user", "content": user_content},
         ],
         temperature=0,
     )
@@ -241,15 +560,56 @@ def run_query(
     row_ids: List[int],
     client: OpenAI,
     query: str,
+    conversation_history: Optional[List[Dict]] = None,
 ) -> Tuple[str, List[dict], List[dict]]:
-    lowered = query.lower()
-    limit = parse_top_n(query, default=5)
+    # Get year range from data for context
+    years = df["Released_Year"].dropna()
+    data_min_year = int(years.min()) if len(years) > 0 else 1920
+    data_max_year = int(years.max()) if len(years) > 0 else 2020
+    
+    # Resolve references using conversation history
+    resolved_query = resolve_references(client, query, conversation_history or [])
+    
+    lowered = resolved_query.lower()
+    limit = parse_top_n(resolved_query, default=5)
 
-    title_match = find_title_match(df, query)
+    title_match = find_title_match(df, resolved_query)
     if title_match and ("release" in lowered or "released" in lowered):
         results = df[df["Series_Title"] == title_match].head(1)
         cards = to_movie_cards(results, 1)
         recs = recommend_similar(df, embeddings, row_ids, results.index.tolist())
+        return "filtered", cards, recs
+
+    year_start, year_end = parse_years(query)
+    if "meta score" in lowered and year_start and year_end and "top" in lowered:
+        filtered = df[df["Released_Year"].between(year_start, year_end)]
+        filtered = filtered.sort_values("Meta_score", ascending=False).head(limit)
+        cards = to_movie_cards(filtered, limit)
+        recs = recommend_similar(df, embeddings, row_ids, filtered.index.tolist())
+        return "filtered", cards, recs
+
+    genre = parse_genre(query)
+    if genre and "imdb" in lowered and "rating" in lowered and year_start and year_end:
+        filtered = df[
+            df["Released_Year"].between(year_start, year_end)
+            & df["Genre_Lower"].str.contains(genre, na=False)
+        ]
+        filtered = filtered.sort_values("IMDB_Rating", ascending=False).head(limit)
+        cards = to_movie_cards(filtered, limit)
+        recs = recommend_similar(df, embeddings, row_ids, filtered.index.tolist())
+        return "filtered", cards, recs
+
+    if genre and "meta score" in lowered and "imdb" in lowered:
+        meta_threshold = parse_threshold(query, "meta score")
+        imdb_threshold = parse_threshold(query, "imdb rating")
+        filtered = df[df["Genre_Lower"].str.contains(genre, na=False)]
+        if meta_threshold is not None:
+            filtered = filtered[filtered["Meta_score"] >= meta_threshold]
+        if imdb_threshold is not None:
+            filtered = filtered[filtered["IMDB_Rating"] >= imdb_threshold]
+        filtered = filtered.sort_values("IMDB_Rating", ascending=False).head(limit)
+        cards = to_movie_cards(filtered, limit)
+        recs = recommend_similar(df, embeddings, row_ids, filtered.index.tolist())
         return "filtered", cards, recs
 
     if "top directors" in lowered and "gross" in lowered and "twice" in lowered:
@@ -282,8 +642,33 @@ def run_query(
         recs = recommend_similar(df, embeddings, row_ids, results.index.tolist())
         return "semantic", cards, recs
 
+    # Handle director queries
+    director = parse_director(resolved_query, df)
+    if director and ("direct" in lowered or "by" in lowered or "movie" in lowered or "film" in lowered):
+        filtered = df[df["Director_Lower"].str.contains(director, na=False)]
+        filtered = filtered.sort_values("IMDB_Rating", ascending=False).head(limit)
+        cards = to_movie_cards(filtered, limit)
+        recs = recommend_similar(df, embeddings, row_ids, filtered.index.tolist())
+        return "filtered", cards, recs
+
+    # Handle actor queries
+    actor = parse_actor(resolved_query, df)
+    if actor:
+        # Search in Stars_Lower which contains all Star1-4 combined
+        filtered = df[df["Stars_Lower"].str.contains(actor, na=False)]
+        filtered = filtered.sort_values("IMDB_Rating", ascending=False).head(limit)
+        cards = to_movie_cards(filtered, limit)
+        recs = recommend_similar(df, embeddings, row_ids, filtered.index.tolist())
+        return "filtered", cards, recs
+
     try:
-        plan = plan_query_with_llm(client, query)
+        plan = plan_query_with_llm(
+            client, 
+            resolved_query, 
+            conversation_history,
+            min_year=data_min_year,
+            max_year=data_max_year
+        )
     except Exception:
         plan = QueryPlan(action="filter_sort", filters=[], sort=[], limit=limit)
 
@@ -292,7 +677,7 @@ def run_query(
         filtered = apply_filters(filtered, plan.filters)
 
     if plan.action in {"semantic_search", "hybrid"}:
-        text_query = plan.text_query or query
+        text_query = plan.text_query or resolved_query
         query_vector = embed_query(client, text_query)
         allowed_ids = filtered.index.tolist() if plan.filters else None
         filtered = semantic_rank(df, embeddings, row_ids, query_vector, plan.limit, allowed_ids)

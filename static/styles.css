@@ -1,0 +1,411 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+/* ===== ROOT VARIABLES (DARK MODE DEFAULT) ===== */
+:root {
+    --bg-primary: #0a0a0f;
+    --bg-secondary: #12121a;
+    --bg-tertiary: #1a1a26;
+
+    --accent-gold: #f5c542;
+    --accent-amber: #ff9f1c;
+    --accent-coral: #ff6b6b;
+    --accent-purple: #8b5cf6;
+    --accent-cyan: #22d3ee;
+
+    --text-primary: #ffffff;
+    --text-secondary: #94a3b8;
+    --text-muted: #64748b;
+
+    --glass-bg: rgba(255, 255, 255, 0.05);
+    --glass-border: rgba(255, 255, 255, 0.1);
+
+    --gradient-gold: linear-gradient(135deg, #f5c542 0%, #ff9f1c 50%, #ff6b6b 100%);
+    --gradient-ambient: linear-gradient(135deg, rgba(245, 197, 66, 0.15) 0%, rgba(139, 92, 246, 0.15) 100%);
+    --shadow-glow: 0 0 60px rgba(245, 197, 66, 0.2);
+
+    /* Input bar specific */
+    --input-bar-bg: linear-gradient(to top, var(--bg-primary) 80%, transparent);
+}
+
+/* ===== LIGHT MODE OVERRIDES ===== */
+@media (prefers-color-scheme: light) {
+    :root {
+        --bg-primary: #ffffff;
+        --bg-secondary: #f8fafc;
+        --bg-tertiary: #e2e8f0;
+
+        --text-primary: #0f172a;
+        --text-secondary: #475569;
+        --text-muted: #64748b;
+
+        --glass-bg: rgba(255, 255, 255, 0.8);
+        --glass-border: rgba(0, 0, 0, 0.1);
+
+        --shadow-glow: 0 0 40px rgba(245, 197, 66, 0.25);
+
+        /* Input bar needs to match white bg */
+        --input-bar-bg: linear-gradient(to top, #ffffff 85%, rgba(255, 255, 255, 0));
+    }
+}
+
+/* ===== GLOBAL STYLES ===== */
+.stApp {
+    background: var(--bg-primary);
+    color: var(--text-primary);
+}
+
+/* Improve header layout */
+.stApp>header {
+    background: transparent !important;
+}
+
+.main .block-container {
+    max-width: 900px;
+    padding: 2rem 2rem 8rem 2rem;
+    /* Added bottom padding for input bar */
+    margin: 0 auto;
+}
+
+/* ===== TYPOGRAPHY ===== */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p,
+span,
+div,
+label,
+button,
+input,
+textarea {
+    font-family: 'Space Grotesk', sans-serif !important;
+}
+
+h1,
+h2,
+h3 {
+    color: var(--text-primary) !important;
+}
+
+p {
+    color: var(--text-primary) !important;
+}
+
+/* ===== HERO SECTION ===== */
+.hero-section {
+    text-align: center;
+    padding: 3rem 1rem 2rem;
+    animation: fadeUnique 0.8s ease-out;
+}
+
+@keyframes fadeUnique {
+    from {
+        opacity: 0;
+        transform: translateY(-20px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.hero-emoji {
+    font-size: 4.5rem;
+    margin-bottom: 0.5rem;
+    display: inline-block;
+    filter: drop-shadow(0 0 30px rgba(245, 197, 66, 0.4));
+    animation: float 5s ease-in-out infinite;
+}
+
+@keyframes float {
+
+    0%,
+    100% {
+        transform: translateY(0) rotate(0deg);
+    }
+
+    50% {
+        transform: translateY(-10px) rotate(2deg);
+    }
+}
+
+.hero-title-text {
+    font-size: 3rem !important;
+    font-weight: 800 !important;
+    background: var(--gradient-gold);
+    -webkit-background-clip: text !important;
+    -webkit-text-fill-color: transparent !important;
+    background-clip: text !important;
+    margin: 0 0 1rem 0 !important;
+    padding: 0 !important;
+    letter-spacing: -0.03em !important;
+    line-height: 1.1 !important;
+}
+
+.hero-subtitle-text {
+    font-size: 1.2rem !important;
+    color: var(--text-secondary) !important;
+    font-weight: 400 !important;
+    max-width: 600px !important;
+    margin: 0 auto !important;
+    line-height: 1.6 !important;
+}
+
+/* ===== CHAT MESSAGES ===== */
+.stChatMessage {
+    background: var(--bg-secondary) !important;
+    border: 1px solid var(--glass-border) !important;
+    border-radius: 16px !important;
+    padding: 1.5rem !important;
+    margin: 1rem 0 !important;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.03);
+    transition: transform 0.2s ease;
+}
+
+.stChatMessage:hover {
+    transform: translateY(-2px);
+}
+
+.stChatMessage[data-testid="stChatMessageUser"] {
+    background: var(--bg-tertiary) !important;
+    border-left: 4px solid var(--accent-gold) !important;
+}
+
+.stChatMessage[data-testid="stChatMessageAssistant"] {
+    background: var(--bg-secondary) !important;
+    border-left: 4px solid var(--accent-purple) !important;
+}
+
+/* Ensure text visible in both modes */
+.stChatMessage p {
+    color: var(--text-primary) !important;
+    font-size: 1.05rem !important;
+    line-height: 1.7 !important;
+}
+
+.stChatMessage code {
+    background: var(--bg-primary) !important;
+    color: var(--accent-cyan) !important;
+}
+
+/* Avatar styling */
+.stChatMessage [data-testid="stChatMessageAvatarUser"],
+.stChatMessage [data-testid="stChatMessageAvatarAssistant"] {
+    background: var(--gradient-gold) !important;
+    border-radius: 12px !important;
+}
+
+.stChatMessage [data-testid="stChatMessageAvatarUser"] {
+    background: linear-gradient(135deg, var(--accent-amber), var(--accent-gold)) !important;
+}
+
+.stChatMessage [data-testid="stChatMessageAvatarAssistant"] {
+    background: linear-gradient(135deg, var(--accent-purple), var(--accent-cyan)) !important;
+}
+
+/* ===== HEADER & TOOLBAR ===== */
+/* Completely hide the Streamlit header and decorations */
+header[data-testid="stHeader"] {
+    display: none !important;
+    visibility: hidden !important;
+}
+
+/* Also hide the top-right toolbar options */
+[data-testid="stToolbar"] {
+    display: none !important;
+    visibility: hidden !important;
+}
+
+/* ===== INPUT AREA & AUDIO ===== */
+/* This targets the container holding both audio and chat input at the bottom */
+[data-testid="stHorizontalBlock"]:has(.stAudioInput) {
+    position: fixed !important;
+    bottom: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    background: var(--input-bar-bg) !important;
+    backdrop-filter: blur(10px) !important;
+    z-index: 1000 !important;
+    padding: 1rem 2rem 2rem !important;
+    border-top: 1px solid var(--glass-border) !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    width: 100% !important;
+}
+
+/* Ensure inner content is centered and constrained */
+[data-testid="stHorizontalBlock"]:has(.stAudioInput)>div {
+    max-width: 900px;
+    margin: 0 auto;
+    align-items: center !important;
+}
+
+/* Chat Input Styling - FIX DUPLICATE BORDERS */
+.stChatInput {
+    padding-bottom: 0 !important;
+    border: none !important;
+    background: transparent !important;
+}
+
+.stChatInput>div {
+    border: none !important;
+    background: transparent !important;
+}
+
+.stChatInput textarea {
+    background: var(--bg-secondary) !important;
+    color: var(--text-primary) !important;
+    border: 1px solid var(--glass-border) !important;
+    border-radius: 24px !important;
+    padding: 1rem 1.25rem !important;
+    font-size: 1rem !important;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05) !important;
+}
+
+.stChatInput textarea:focus {
+    border-color: var(--accent-gold) !important;
+    box-shadow: 0 0 0 3px rgba(245, 197, 66, 0.15) !important;
+}
+
+/* Send button styling */
+.stChatInput button {
+    background: var(--gradient-gold) !important;
+    border: none !important;
+    color: #000 !important;
+    border-radius: 50% !important;
+    padding: 0.5rem !important;
+    width: 2.5rem !important;
+    height: 2.5rem !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+}
+
+/* Audio Input Styling - SIMPLIFIED / REMOVE CIRCLES INSIDE */
+.stAudioInput {
+    margin-top: 0;
+}
+
+/* The outer container of the mic button */
+.stAudioInput>div>div>div:first-child {
+    background: transparent !important;
+    /* Removed background circle */
+    border: none !important;
+    /* Removed border */
+    box-shadow: none !important;
+    width: auto !important;
+    height: auto !important;
+    padding: 0.5rem !important;
+}
+
+/* The mic icon itself (inner SVG usually) */
+.stAudioInput button {
+    background: var(--bg-tertiary) !important;
+    border: 1px solid var(--glass-border) !important;
+    border-radius: 50% !important;
+    width: 3.5rem !important;
+    height: 3.5rem !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    transition: all 0.3s ease !important;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1) !important;
+    padding: 0 !important;
+}
+
+/* Hover effect on the button */
+.stAudioInput button:hover {
+    background: var(--accent-gold) !important;
+    transform: scale(1.1);
+    box-shadow: 0 0 20px rgba(245, 197, 66, 0.4) !important;
+}
+
+/* ===== SIDEBAR ===== */
+[data-testid="stSidebar"] {
+    background-color: var(--bg-secondary) !important;
+    border-right: 1px solid var(--glass-border) !important;
+}
+
+[data-testid="stSidebar"] h1,
+[data-testid="stSidebar"] h2,
+[data-testid="stSidebar"] h3 {
+    color: var(--text-primary) !important;
+}
+
+[data-testid="stSidebar"] .stMarkdown {
+    color: var(--text-secondary) !important;
+}
+
+/* ===== PROCESSING INDICATOR ===== */
+.processing-container {
+    background: var(--bg-secondary);
+    border: 1px solid var(--glass-border);
+    border-radius: 20px;
+    padding: 2rem;
+    text-align: center;
+    margin: 2rem 0;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.05);
+}
+
+.processing-text {
+    color: var(--text-primary);
+    font-size: 1.2rem;
+    font-weight: 600;
+    margin-top: 1rem;
+}
+
+.processing-subtext {
+    color: var(--text-secondary);
+    font-size: 0.95rem;
+}
+
+/* Animations */
+@keyframes pulse {
+
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.6;
+    }
+}
+
+/* ===== RESULTS & CARDS ===== */
+.stImage {
+    border-radius: 12px !important;
+    overflow: hidden;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+}
+
+.stDataFrame {
+    border: 1px solid var(--glass-border) !important;
+    border-radius: 12px !important;
+    background: var(--bg-secondary) !important;
+}
+
+/* Hide header decoration */
+header[data-testid="stHeader"] {
+    background: transparent !important;
+}
+
+/* ===== BUTTONS ===== */
+.stButton>button {
+    background: var(--gradient-gold) !important;
+    color: #000 !important;
+    /* Ensure readable text on gold */
+    border: none !important;
+    border-radius: 12px !important;
+    font-weight: 600 !important;
+    padding: 0.75rem 1.5rem !important;
+    transition: all 0.3s ease !important;
+}
+
+.stButton>button:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 25px rgba(245, 197, 66, 0.35) !important;
+}
