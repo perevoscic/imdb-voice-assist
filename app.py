@@ -1,10 +1,15 @@
 import hashlib
 import io
+import logging
 import os
 import queue
 import time
 import wave
 from typing import Optional
+
+import tornado.ioloop
+import tornado.iostream
+import tornado.websocket
 
 import numpy as np
 import streamlit as st
@@ -33,6 +38,35 @@ load_dotenv()
 MAX_INPUT_CHARS = int(os.getenv("MAX_INPUT_CHARS", "2000"))
 MAX_AUDIO_BYTES = int(os.getenv("MAX_AUDIO_BYTES", str(5 * 1024 * 1024)))
 RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "30"))
+logger = logging.getLogger(__name__)
+
+
+def configure_asyncio_exception_handler():
+    """Suppress expected WebSocket close errors from Tornado/Streamlit tasks."""
+    if os.getenv("SUPPRESS_WS_CLOSE_ERRORS", "1") != "1":
+        return
+    try:
+        loop = tornado.ioloop.IOLoop.current().asyncio_loop
+    except Exception:
+        return
+
+    logged = False
+    log_suppressed = os.getenv("LOG_SUPPRESSED_WS_ERRORS", "0") == "1"
+
+    def _handler(loop, context):
+        nonlocal logged
+        exc = context.get("exception")
+        if isinstance(
+            exc,
+            (tornado.websocket.WebSocketClosedError, tornado.iostream.StreamClosedError),
+        ):
+            if log_suppressed and not logged:
+                logger.info("Suppressed WebSocket close error from Tornado.")
+                logged = True
+            return
+        loop.default_exception_handler(context)
+
+    loop.set_exception_handler(_handler)
 
 
 def load_css():
@@ -43,7 +77,7 @@ def load_css():
 
 
 def render_hero():
-    """Render the hero header section."""
+    """Render the hero header section with new chat button."""
     st.markdown("""
     <div class="hero-section">
         <span class="hero-emoji">🎬</span>
@@ -51,6 +85,19 @@ def render_hero():
         <p class="hero-subtitle-text">Ask me anything about movies using your voice or text. I know the top 1000 IMDB films inside out.</p>
     </div>
     """, unsafe_allow_html=True)
+
+
+def clear_conversation():
+    """Clear the conversation state without page reload."""
+    st.session_state.messages = []
+    st.session_state.pending_clarification = False
+    st.session_state.pending_query = ""
+    st.session_state.clarification_question = ""
+    st.session_state.pending_voice_text = ""
+    st.session_state.last_audio_hash = ""
+    st.session_state.live_transcript = ""
+    st.session_state.audio_frame_buffer = []
+    st.session_state.audio_buffer_samples = 0
 
 
 def render_empty_state():
@@ -107,7 +154,7 @@ def respond_with_text(
         speakable_text = clean_text_for_speech(text)
         audio_response = synthesize_speech(client, speakable_text)
     st.session_state.messages.append({"role": "assistant", "content": text, "audio": audio_response})
-    with st.chat_message("assistant"):
+    with st.chat_message("assistant", avatar="🎬"):
         st.markdown(text)
         if audio_response:
             st.audio(audio_response, format="audio/mp3", autoplay=auto_play_audio)
@@ -282,6 +329,7 @@ def render_results_section(results, recommendations):
 
 
 def main():
+    configure_asyncio_exception_handler()
     st.set_page_config(
         page_title="Movie Voice Assistant",
         page_icon="🎬",
@@ -291,6 +339,11 @@ def main():
     
     # Load custom CSS
     load_css()
+    
+    # Render new chat button (fixed position via CSS using .st-key-new_chat_btn)
+    if st.button("✨", key="new_chat_btn", help="Start a new conversation"):
+        clear_conversation()
+        st.rerun()
     
     # Render hero header
     render_hero()
@@ -384,7 +437,8 @@ def main():
         render_empty_state()
     else:
         for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
+            avatar = "👤" if message["role"] == "user" else "🎬"
+            with st.chat_message(message["role"], avatar=avatar):
                 st.markdown(message["content"])
                 if message.get("audio"):
                     st.audio(message["audio"], format="audio/mp3", autoplay=auto_play_audio)
@@ -515,7 +569,7 @@ def main():
 
     if query:
         st.session_state.messages.append({"role": "user", "content": query})
-        with st.chat_message("user"):
+        with st.chat_message("user", avatar="👤"):
             st.markdown(query)
 
         if len(query) > MAX_INPUT_CHARS:
@@ -602,7 +656,7 @@ def main():
             st.session_state.pending_query = query
             st.session_state.clarification_question = clarification
             st.session_state.messages.append({"role": "assistant", "content": clarification, "audio": audio_response})
-            with st.chat_message("assistant"):
+            with st.chat_message("assistant", avatar="🎬"):
                 st.markdown(clarification)
                 if audio_response:
                     st.audio(audio_response, format="audio/mp3", autoplay=auto_play_audio)
@@ -666,7 +720,7 @@ def main():
         st.session_state.messages.append(
             {"role": "assistant", "content": response_text, "audio": audio_response}
         )
-        with st.chat_message("assistant"):
+        with st.chat_message("assistant", avatar="🎬"):
             st.markdown(response_text)
             if audio_response:
                 st.audio(audio_response, format="audio/mp3", autoplay=auto_play_audio)

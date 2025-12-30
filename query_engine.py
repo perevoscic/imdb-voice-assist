@@ -109,6 +109,46 @@ def find_title_match(df: pd.DataFrame, query: str) -> Optional[str]:
     return None
 
 
+def find_title_keyword(query: str) -> Optional[str]:
+    """
+    Extract a potential movie title keyword from queries like:
+    - "all Godfather movies"
+    - "show me Matrix films"
+    - "bring me Godfather's movies"
+    Returns the keyword for title search, or None if not detected.
+    """
+    lowered = query.lower()
+    
+    # Patterns that indicate a title search
+    patterns = [
+        r"(?:all|show|bring|get|find|list)\s+(?:me\s+)?(?:the\s+)?([a-z0-9\s]+?)(?:'s)?\s+(?:movies?|films?)",
+        r"(?:movies?|films?)\s+(?:called|named|titled)\s+(?:the\s+)?([a-z0-9\s]+)",
+        r"([a-z0-9\s]+?)\s+(?:movies?|films?|trilogy|series|franchise)",
+    ]
+    
+    # Words to strip from extracted keyword
+    generic = {"best", "top", "all", "good", "great", "new", "old", "my", "favorite", "favourite", "the", "a", "an"}
+    
+    for pattern in patterns:
+        match = re.search(pattern, lowered)
+        if match:
+            keyword = match.group(1).strip()
+            # Remove generic words from the keyword
+            keyword_tokens = keyword.split()
+            cleaned_tokens = [t for t in keyword_tokens if t not in generic]
+            keyword = " ".join(cleaned_tokens).strip()
+            
+            if keyword and len(keyword) >= 3:
+                return keyword
+    
+    return None
+
+
+def find_movies_by_title_keyword(df: pd.DataFrame, keyword: str) -> pd.DataFrame:
+    """Find all movies whose title contains the given keyword."""
+    return df[df["Title_Lower"].str.contains(keyword.lower(), na=False)]
+
+
 def parse_years(query: str) -> Tuple[Optional[int], Optional[int]]:
     years = [int(y) for y in re.findall(r"(19\\d{2}|20\\d{2})", query)]
     if not years:
@@ -186,40 +226,49 @@ def parse_actor(query: str, df: pd.DataFrame) -> Optional[str]:
     """Extract actor name from query if present in the dataset (Star1-Star4 columns)."""
     lowered = query.lower()
     
-    # Check for actor-related patterns
+    # Remove possessive suffixes for matching (e.g., "Al Pacino's" -> "Al Pacino")
+    # Keep the cleaned version for pattern matching
+    cleaned_query = re.sub(r"'s\b", "", lowered)
+    cleaned_query = re.sub(r"'s\b", "", cleaned_query)  # Handle curly apostrophe too
+    
+    # Check for actor-related patterns with improved regex
     patterns = [
         r"(?:starring|with|featuring)\s+([a-z\s]+?)(?:\?|$|,|\.|movies|films|as)",
-        r"([a-z\s]+?)\s+(?:movies|films|starred|stars)",
-        r"movies\s+(?:with|starring|featuring)\s+([a-z\s]+?)(?:\?|$|,|\.)",
-        r"films\s+(?:with|starring|featuring)\s+([a-z\s]+?)(?:\?|$|,|\.)",
+        r"(?:all\s+)?([a-z\s]+?)(?:'s?)?\s+(?:movies?|films?|starred|stars)",
+        r"movies?\s+(?:with|starring|featuring|by|from)\s+([a-z\s]+?)(?:\?|$|,|\.)",
+        r"films?\s+(?:with|starring|featuring|by|from)\s+([a-z\s]+?)(?:\?|$|,|\.)",
         r"([a-z\s]+?)\s+as\s+(?:lead|main|star)",
+        r"(?:show|list|get|find|bring)\s+(?:me\s+)?(?:all\s+)?([a-z\s]+?)(?:'s?)?\s+(?:movies?|films?)",
     ]
     
-    for pattern in patterns:
-        match = re.search(pattern, lowered)
-        if match:
-            potential_name = match.group(1).strip()
-            # Verify this name exists in our Stars_Lower column
-            for _, row in df.iterrows():
-                stars_lower = str(row.get("Stars_Lower", "")).lower()
-                if potential_name in stars_lower:
-                    # Find the exact actor name from Star1-4
-                    for star_col in ["Star1", "Star2", "Star3", "Star4"]:
-                        star_val = str(row.get(star_col, "")).lower()
-                        if potential_name in star_val:
-                            return star_val
-    
-    # Fallback: check if any known actor name (2+ words) appears in the query
-    # Build a set of unique actors from Star1-4
+    # Build a set of unique actors from Star1-4 (do this once, not in loop)
     all_actors = set()
     for star_col in ["Star1", "Star2", "Star3", "Star4"]:
         actors = df[star_col].dropna().astype(str).str.lower().unique()
         all_actors.update(actors)
     
+    for pattern in patterns:
+        match = re.search(pattern, cleaned_query)
+        if match:
+            potential_name = match.group(1).strip()
+            # Remove generic words that might be captured
+            generic = {"all", "the", "me", "show", "list", "get", "find", "bring"}
+            name_parts = [p for p in potential_name.split() if p not in generic]
+            potential_name = " ".join(name_parts).strip()
+            
+            if len(potential_name) < 3:
+                continue
+                
+            # Check if this name matches any known actor
+            for actor in all_actors:
+                if potential_name in actor or actor in potential_name:
+                    return actor
+    
+    # Fallback: check if any known actor name (2+ words) appears in the query
     for actor in all_actors:
         actor_parts = actor.split()
         if len(actor_parts) >= 2:
-            if actor in lowered:
+            if actor in cleaned_query:
                 return actor
     
     return None
@@ -640,6 +689,18 @@ def run_query(
         cards = to_movie_cards(results, 1)
         recs = recommend_similar(df, embeddings, row_ids, results.index.tolist())
         return "filtered", cards, recs
+
+    # Handle title keyword searches like "all Godfather movies", "Matrix films", etc.
+    title_keyword = find_title_keyword(resolved_query)
+    if title_keyword:
+        results = find_movies_by_title_keyword(df, title_keyword)
+        if not results.empty:
+            # Use a higher limit for "all X movies" queries to show full franchises
+            title_limit = max(limit, len(results))
+            results = results.sort_values("IMDB_Rating", ascending=False).head(title_limit)
+            cards = to_movie_cards(results, title_limit)
+            recs = recommend_similar(df, embeddings, row_ids, results.index.tolist())
+            return "filtered", cards, recs
 
     year_start, year_end = parse_years(query)
     if "meta score" in lowered and year_start and year_end and "top" in lowered:
