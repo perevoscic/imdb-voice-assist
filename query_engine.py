@@ -213,13 +213,21 @@ def _parse_gross_threshold(query: str) -> Optional[float]:
     Examples: "gross over 50m", "gross >= 120000000", "$200m box office".
     """
     lowered = query.lower()
-    match = re.search(r"gross[^0-9]*([\d\.]+)\s*(b|billion|m|million)?", lowered)
+    # Require at least one digit to avoid matching just "."
+    number_pattern = r"(\d+(?:\.\d*)?|\.\d+)"
+    
+    match = re.search(rf"gross[^0-9]*{number_pattern}\s*(b|billion|m|million)?", lowered)
     if not match:
         # Fallback if dollar sign without keyword
-        match = re.search(r"\$([\d\.]+)\s*(b|billion|m|million)?", lowered)
+        match = re.search(rf"\${number_pattern}\s*(b|billion|m|million)?", lowered)
     if not match:
         return None
-    value = float(match.group(1))
+    
+    try:
+        value = float(match.group(1))
+    except ValueError:
+        return None
+        
     unit = match.group(2) or ""
     if unit in {"b", "billion"}:
         value *= 1_000_000_000
@@ -235,9 +243,13 @@ def _parse_imdb_threshold(query: str) -> Optional[float]:
     - rating >= 7.5
     """
     lowered = query.lower()
-    match = re.search(r"(imdb rating|rating)[^0-9]*([\d\.]+)", lowered)
+    # Require at least one digit
+    match = re.search(r"(imdb rating|rating)[^0-9]*(\d+(?:\.\d*)?|\.\d+)", lowered)
     if match:
-        return float(match.group(2))
+        try:
+            return float(match.group(2))
+        except ValueError:
+            return None
     return None
 
 
