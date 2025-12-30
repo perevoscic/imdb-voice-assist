@@ -3,11 +3,12 @@ import os
 import re
 from difflib import SequenceMatcher
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 from openai import OpenAI
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from imdb_data import to_movie_cards
 from vector_store import cosine_similarity
@@ -19,6 +20,35 @@ class QueryPlan:
     filters: List[Dict]
     sort: List[Dict]
     limit: int
+    text_query: Optional[str] = None
+
+
+class _SchemaBase(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+
+class ClarificationResult(_SchemaBase):
+    needs_clarification: bool
+    clarification_question: Optional[str] = None
+    reasoning: Optional[str] = None
+
+
+class FilterSpec(_SchemaBase):
+    field: str
+    op: Literal["eq", "contains", "gt", "gte", "lt", "lte", "between", "in"]
+    value: Any
+
+
+class SortSpec(_SchemaBase):
+    field: str
+    order: Literal["asc", "desc"]
+
+
+class QueryPlanSpec(_SchemaBase):
+    action: Literal["filter_sort", "semantic_search", "hybrid"] = "filter_sort"
+    filters: List[FilterSpec] = Field(default_factory=list)
+    sort: List[SortSpec] = Field(default_factory=list)
+    limit: int = Field(default=5, ge=1, le=50)
     text_query: Optional[str] = None
 
 
@@ -223,6 +253,22 @@ def check_needs_clarification(
     Use LLM to determine if the query needs clarification.
     Returns the clarification question if needed, None otherwise.
     """
+    # First, check if the query mentions a specific movie that has exactly one match
+    # If so, no clarification is needed
+    title_match = find_title_match(df, query)
+    if title_match:
+        # Count how many movies match this title (or similar titles)
+        matching_movies = df[df["Series_Title"].str.lower().str.contains(
+            title_match.lower().split()[0], na=False  # Use first word to catch sequels
+        )]
+        # If only one movie matches, no clarification needed
+        if len(matching_movies) == 1:
+            return None
+        # If multiple movies but exact title match, still no clarification
+        exact_matches = df[df["Series_Title"].str.lower() == title_match.lower()]
+        if len(exact_matches) == 1:
+            return None
+    
     history_str = format_conversation_history(conversation_history)
     
     # Get some context about available data
@@ -281,12 +327,15 @@ Does this query need clarification before I can search the movie database?"""
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0,
+            max_tokens=200,
         )
         content = response.choices[0].message.content
-        result = json.loads(_clean_json(content))
-        
-        if result.get("needs_clarification"):
-            return result.get("clarification_question")
+        try:
+            result = ClarificationResult.model_validate_json(_clean_json(content))
+        except ValidationError:
+            return None
+        if result.needs_clarification and result.clarification_question:
+            return result.clarification_question
         return None
     except Exception:
         return None
@@ -348,6 +397,7 @@ Rewritten query (self-contained):"""
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0,
+            max_tokens=80,
         )
         resolved = response.choices[0].message.content.strip()
         # Remove quotes if the LLM wrapped the response
@@ -420,16 +470,27 @@ def plan_query_with_llm(
             {"role": "user", "content": user_content},
         ],
         temperature=0,
+        max_tokens=300,
     )
     content = response.choices[0].message.content
-    plan_dict = json.loads(_clean_json(content))
-    return QueryPlan(
-        action=plan_dict.get("action", "filter_sort"),
-        filters=plan_dict.get("filters", []),
-        sort=plan_dict.get("sort", []),
-        limit=int(plan_dict.get("limit", 5)),
-        text_query=plan_dict.get("text_query"),
-    )
+    try:
+        plan_spec = QueryPlanSpec.model_validate_json(_clean_json(content))
+        return QueryPlan(
+            action=plan_spec.action,
+            filters=[f.model_dump() for f in plan_spec.filters],
+            sort=[s.model_dump() for s in plan_spec.sort],
+            limit=plan_spec.limit,
+            text_query=plan_spec.text_query,
+        )
+    except ValidationError:
+        fallback_limit = parse_top_n(query, default=5)
+        return QueryPlan(
+            action="filter_sort",
+            filters=[],
+            sort=[],
+            limit=fallback_limit,
+            text_query=None,
+        )
 
 
 def embed_query(client: OpenAI, text: str) -> np.ndarray:

@@ -67,6 +67,26 @@ streamlit run app.py
 - Summarize the movie plots of Steven Spielberg’s top-rated sci-fi movies
 - List of movies before 1990 that have involvement of police in the plot
 
+## Safety & Scope
+
+Policy (simple):
+- Allowed: movie questions, recommendations, plot summaries, dataset stats
+- Disallowed: hate/harassment, sexual content involving minors, self-harm, instructions for wrongdoing, doxxing, explicit porn
+- Profanity alone is allowed (warn + continue); blocking only when it targets a person or group
+
+Runtime enforcement:
+- Moderation gate runs before any retrieval or LLM calls, including voice transcripts (OpenAI moderation endpoint by default)
+- Out-of-scope requests are redirected: "I'm an IMDb assistant. Ask about movies, directors, ratings, years, genres, plots."
+- Strict JSON validation for LLM-planned queries with Pydantic
+- Rate limiting (per-session) with exponential backoff and max input size limits
+- No raw audio or secrets in logs; API keys stay in env vars
+ - If swapping to Gemini, apply safety settings and block or redirect on threshold
+
+Implementation notes:
+- `src/safety.py` handles moderation, scope checks, and safety messages
+- `app.py` calls safety checks before `check_needs_clarification` or `run_query`
+- Optional env vars: `MODERATION_MODEL`, `SCOPE_MODEL`, `MAX_INPUT_CHARS`, `MAX_AUDIO_BYTES`, `RATE_LIMIT_PER_MINUTE`, `OPENAI_TIMEOUT`
+
 ## Notes
 
 - Voice input uses `st.audio_input`; allow microphone access in your browser.

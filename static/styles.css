@@ -61,7 +61,7 @@
 
 .main .block-container {
     max-width: 900px;
-    padding: 2rem 2rem 8rem 2rem;
+    padding: 2rem 2rem 10rem 2rem;
     /* Added bottom padding for input bar */
     margin: 0 auto;
 }
@@ -163,6 +163,19 @@ p {
     margin: 1rem 0 !important;
     box-shadow: 0 4px 20px rgba(0, 0, 0, 0.03);
     transition: transform 0.2s ease;
+    animation: slideUp 0.4s ease-out both;
+}
+
+@keyframes slideUp {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
 }
 
 .stChatMessage:hover {
@@ -253,16 +266,27 @@ header[data-testid="stHeader"] {
 .stChatInput>div {
     border: none !important;
     background: transparent !important;
+    display: flex !important;
+    align-items: center !important;
+}
+
+/* BaseWeb internal input styling override */
+.stChatInput div[data-baseweb="base-input"],
+.stChatInput div[data-baseweb="input"] {
+    background-color: transparent !important;
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
 }
 
 .stChatInput textarea {
-    background: var(--bg-secondary) !important;
+    background: transparent !important;
     color: var(--text-primary) !important;
     border: 1px solid var(--glass-border) !important;
     border-radius: 24px !important;
     padding: 1rem 1.25rem !important;
     font-size: 1rem !important;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05) !important;
+    box-shadow: none !important;
 }
 
 .stChatInput textarea:focus {
@@ -282,6 +306,8 @@ header[data-testid="stHeader"] {
     display: flex !important;
     align-items: center !important;
     justify-content: center !important;
+    margin-top: auto !important;
+    margin-bottom: auto !important;
 }
 
 /* Audio Input Styling - SIMPLIFIED / REMOVE CIRCLES INSIDE */

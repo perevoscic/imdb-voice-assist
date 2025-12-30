@@ -74,5 +74,6 @@ def build_response(
             {"role": "user", "content": json.dumps(payload)},
         ],
         temperature=0.4,
+        max_tokens=700,
     )
     return response.choices[0].message.content

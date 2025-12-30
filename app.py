@@ -16,11 +16,23 @@ from imdb_data import ImdbConfig, load_imdb_data
 from indexing import build_embeddings
 from query_engine import check_needs_clarification, run_query
 from response_builder import build_response
+from src.safety import (
+    contains_profanity,
+    is_in_scope,
+    moderate_text,
+    out_of_scope_message,
+    profanity_nudge_message,
+    safety_refusal_message,
+)
 from vector_store import VectorStorePaths, load_meta, load_vector_store, save_meta, save_vector_store
 from voice import clean_text_for_speech, synthesize_speech, transcribe_audio
 
 
 load_dotenv()
+
+MAX_INPUT_CHARS = int(os.getenv("MAX_INPUT_CHARS", "2000"))
+MAX_AUDIO_BYTES = int(os.getenv("MAX_AUDIO_BYTES", str(5 * 1024 * 1024)))
+RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "30"))
 
 
 def load_css():
@@ -51,6 +63,54 @@ def render_empty_state():
         </p>
     </div>
     """, unsafe_allow_html=True)
+
+
+def render_safety_section():
+    st.markdown("### 🛡️ Safety")
+    st.caption("Allowed: movie questions, recommendations, plot summaries, dataset stats.")
+    st.caption("Not allowed: harassment, self-harm, sexual content involving minors, doxxing, explicit porn.")
+    st.caption("Profanity is OK if not targeted at a person or group.")
+
+
+def check_rate_limit() -> tuple[bool, int]:
+    now = time.time()
+    window_seconds = 60
+    timestamps = st.session_state.get("request_timestamps", [])
+    timestamps = [ts for ts in timestamps if now - ts < window_seconds]
+    throttle_until = st.session_state.get("throttle_until", 0.0)
+    if now < throttle_until:
+        retry_after = int(throttle_until - now)
+        st.session_state["request_timestamps"] = timestamps
+        return False, max(retry_after, 1)
+    if len(timestamps) >= RATE_LIMIT_PER_MINUTE:
+        level = min(st.session_state.get("throttle_level", 0) + 1, 6)
+        wait_seconds = min(60, 2**level)
+        st.session_state["throttle_level"] = level
+        st.session_state["throttle_until"] = now + wait_seconds
+        st.session_state["request_timestamps"] = timestamps
+        return False, wait_seconds
+    timestamps.append(now)
+    st.session_state["request_timestamps"] = timestamps
+    st.session_state["throttle_level"] = max(st.session_state.get("throttle_level", 0) - 1, 0)
+    st.session_state["throttle_until"] = 0.0
+    return True, 0
+
+
+def respond_with_text(
+    client: OpenAI,
+    text: str,
+    voice_replies: bool,
+    auto_play_audio: bool,
+):
+    audio_response = None
+    if voice_replies:
+        speakable_text = clean_text_for_speech(text)
+        audio_response = synthesize_speech(client, speakable_text)
+    st.session_state.messages.append({"role": "assistant", "content": text, "audio": audio_response})
+    with st.chat_message("assistant"):
+        st.markdown(text)
+        if audio_response:
+            st.audio(audio_response, format="audio/mp3", autoplay=auto_play_audio)
 
 
 def show_processing_indicator(status_placeholder, status: str, substatus: str = "", progress: int = 0):
@@ -235,7 +295,7 @@ def main():
     # Render hero header
     render_hero()
 
-    client = OpenAI()
+    client = OpenAI(timeout=float(os.getenv("OPENAI_TIMEOUT", "30")))
 
     df = get_data()
     embeddings, row_ids, meta = get_vector_store()
@@ -290,6 +350,8 @@ def main():
 
         st.markdown("---")
         st.markdown(f"📊 **Database:** {meta.get('rows', 0):,} movies indexed")
+        st.markdown("---")
+        render_safety_section()
 
     # Initialize session state
     if "messages" not in st.session_state:
@@ -410,7 +472,7 @@ def main():
             if user_input:
                 query = user_input
     else:
-        input_col, mic_col = st.columns([14, 1])
+        input_col, mic_col = st.columns([3, 2])
         with input_col:
             user_input = st.chat_input("Ask about movies, directors, ratings, plot...")
         with mic_col:
@@ -418,6 +480,9 @@ def main():
 
         voice_status = st.empty() if audio_input else None
         audio_bytes = audio_input.read() if audio_input else None
+        if audio_bytes and len(audio_bytes) > MAX_AUDIO_BYTES:
+            st.warning("Audio clip too large. Please upload a shorter recording.")
+            audio_bytes = None
         if audio_bytes:
             audio_hash = hashlib.sha256(audio_bytes).hexdigest()
             if audio_hash != st.session_state.last_audio_hash:
@@ -453,6 +518,47 @@ def main():
         with st.chat_message("user"):
             st.markdown(query)
 
+        if len(query) > MAX_INPUT_CHARS:
+            respond_with_text(
+                client,
+                f"That message is too long. Please keep requests under {MAX_INPUT_CHARS} characters.",
+                voice_replies,
+                auto_play_audio,
+            )
+            return
+
+        rate_ok, retry_after = check_rate_limit()
+        if not rate_ok:
+            respond_with_text(
+                client,
+                f"Too many requests. Please wait {retry_after} seconds and try again.",
+                voice_replies,
+                auto_play_audio,
+            )
+            return
+
+        moderation = moderate_text(client, query)
+        if moderation.flagged:
+            respond_with_text(
+                client,
+                safety_refusal_message(),
+                voice_replies,
+                auto_play_audio,
+            )
+            return
+
+        scope_result = is_in_scope(client, query)
+        if not scope_result.in_scope:
+            respond_with_text(
+                client,
+                out_of_scope_message(),
+                voice_replies,
+                auto_play_audio,
+            )
+            return
+
+        tone_nudge = profanity_nudge_message() if contains_profanity(query) else None
+
         # Get conversation history for context
         conversation_history = st.session_state.messages[:-1]
 
@@ -478,6 +584,8 @@ def main():
         clarification = check_needs_clarification(client, query, conversation_history, df)
         
         if clarification:
+            if tone_nudge:
+                clarification = f"{tone_nudge}\n\n{clarification}"
             # Synthesize speech for clarification if voice replies enabled
             audio_response = None
             if voice_replies:
@@ -529,6 +637,8 @@ def main():
             client, query, results, recommendations, conversation_history,
             min_year=data_min_year, max_year=data_max_year
         )
+        if tone_nudge:
+            response_text = f"{tone_nudge}\n\n{response_text}"
         
         # Phase 4: Synthesizing speech
         show_processing_indicator(
