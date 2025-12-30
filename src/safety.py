@@ -53,32 +53,15 @@ MOVIE_HINTS = (
 )
 
 OUT_OF_SCOPE_HINTS = (
-    "hack",
-    "exploit",
-    "malware",
-    "password",
-    "credit card",
-    "bank account",
     "self-harm",
     "suicide",
     "kill myself",
     "weapon",
     "bomb",
     "drugs",
-    "make meth",
     "porn",
     "child porn",
     "doxx",
-    "address",
-    "phone number",
-    "social security",
-    "weather",
-    "stock",
-    "recipe",
-    "code",
-    "python",
-    "javascript",
-    "linux command",
 )
 
 PROFANITY_WORDS = (
@@ -134,9 +117,26 @@ def moderate_text(client: OpenAI, text: str) -> ModerationResult:
                 categories = cat_obj.model_dump()
             else:
                 categories = dict(cat_obj)
-        return ModerationResult(flagged=bool(result.flagged), categories=categories)
+        
+        is_flagged = bool(result.flagged)
+        
+        # False positive check: Allow "violence" categories if the query is clearly about movies
+        # (e.g. "Summarize movies with Al Pacino" often triggers violence flags incorrectly)
+        if is_flagged:
+            # Check if ONLY permissible categories are triggered
+            permissible = {"violence", "violence/graphic"}
+            triggered = {k for k, v in categories.items() if v}
+            
+            if triggered and triggered.issubset(permissible):
+                # Check if it looks like a movie query (use full scope check including LLM)
+                # We pass None for history as we only care about the current query's safety context
+                if is_in_scope(client, text, conversation_history=None).in_scope:
+                    is_flagged = False
+
+        return ModerationResult(flagged=is_flagged, categories=categories)
     except Exception:
-        return ModerationResult(flagged=False, categories={})
+        return ModerationResult(flagged=False, categories={})  # Fail open on error
+
 
 
 def _heuristic_scope(text: str) -> Optional[bool]:
