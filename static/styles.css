@@ -319,6 +319,10 @@ header[data-testid="stHeader"] {
     background: transparent !important;
     border: none !important;
     box-shadow: none !important;
+    min-height: 52px !important;
+    height: 52px !important;
+    display: flex !important;
+    align-items: center !important;
 }
 
 .stChatInput textarea {
@@ -329,6 +333,10 @@ header[data-testid="stHeader"] {
     padding: 1rem 1.25rem !important;
     font-size: 1rem !important;
     box-shadow: none !important;
+    min-height: 52px !important;
+    height: 52px !important;
+    box-sizing: border-box !important;
+    line-height: 1.4 !important;
 }
 
 .stChatInput textarea:focus {
