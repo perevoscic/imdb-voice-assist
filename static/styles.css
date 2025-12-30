@@ -303,6 +303,7 @@ header[data-testid="stHeader"] {
     padding-bottom: 0 !important;
     border: none !important;
     background: transparent !important;
+    min-height: 52px !important;
 }
 
 .stChatInput>div {
@@ -310,6 +311,7 @@ header[data-testid="stHeader"] {
     background: transparent !important;
     display: flex !important;
     align-items: center !important;
+    min-height: 52px !important;
 }
 
 /* BaseWeb internal input styling override */
