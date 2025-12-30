@@ -19,7 +19,7 @@ from streamlit_webrtc import WebRtcMode, webrtc_streamer
 
 from imdb_data import ImdbConfig, load_imdb_data
 from indexing import build_embeddings
-from query_engine import check_needs_clarification, run_query
+from query_engine import check_needs_clarification, parse_top_n, run_query
 from response_builder import build_response
 from src.safety import (
     contains_profanity,
@@ -38,6 +38,7 @@ load_dotenv()
 MAX_INPUT_CHARS = int(os.getenv("MAX_INPUT_CHARS", "2000"))
 MAX_AUDIO_BYTES = int(os.getenv("MAX_AUDIO_BYTES", str(5 * 1024 * 1024)))
 RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "30"))
+DEFAULT_RESULT_LIMIT = int(os.getenv("DEFAULT_RESULT_LIMIT", "10"))
 logger = logging.getLogger(__name__)
 
 
@@ -98,6 +99,10 @@ def clear_conversation():
     st.session_state.live_transcript = ""
     st.session_state.audio_frame_buffer = []
     st.session_state.audio_buffer_samples = 0
+    st.session_state.last_query = ""
+    st.session_state.last_limit = DEFAULT_RESULT_LIMIT
+    st.session_state.load_more_requested = False
+    st.session_state.load_more_prev_limit = 0
 
 
 def render_empty_state():
@@ -447,6 +452,14 @@ def main():
         st.session_state.streaming_prev = False
     if "stream_sample_rate" not in st.session_state:
         st.session_state.stream_sample_rate = 0
+    if "last_query" not in st.session_state:
+        st.session_state.last_query = ""
+    if "last_limit" not in st.session_state:
+        st.session_state.last_limit = DEFAULT_RESULT_LIMIT
+    if "load_more_requested" not in st.session_state:
+        st.session_state.load_more_requested = False
+    if "load_more_prev_limit" not in st.session_state:
+        st.session_state.load_more_prev_limit = 0
 
     # Render existing messages or empty state
     if not st.session_state.messages:
@@ -460,6 +473,9 @@ def main():
                     st.audio(message["audio"], format="audio/mp3", autoplay=auto_play_audio)
 
     query = None
+    is_load_more = False
+    limit_override = None
+    prev_limit = None
 
     if voice_input_mode == "Realtime (WebRTC)":
         if voice_only_mode:
@@ -603,10 +619,19 @@ def main():
         if not query:
             query = user_input
 
+    if not query and st.session_state.load_more_requested and st.session_state.last_query:
+        is_load_more = True
+        prev_limit = st.session_state.load_more_prev_limit or st.session_state.last_limit
+        limit_override = prev_limit + DEFAULT_RESULT_LIMIT
+        st.session_state.last_limit = limit_override
+        st.session_state.load_more_requested = False
+        query = st.session_state.last_query
+
     if query:
-        st.session_state.messages.append({"role": "user", "content": query})
-        with st.chat_message("user", avatar="👤"):
-            st.markdown(query)
+        if not is_load_more:
+            st.session_state.messages.append({"role": "user", "content": query})
+            with st.chat_message("user", avatar="👤"):
+                st.markdown(query)
 
         if len(query) > MAX_INPUT_CHARS:
             respond_with_text(
@@ -627,28 +652,30 @@ def main():
             )
             return
 
-        moderation = moderate_text(client, query)
-        if moderation.flagged:
-            respond_with_text(
-                client,
-                safety_refusal_message(),
-                voice_replies,
-                auto_play_audio,
-            )
-            return
+        if not is_load_more:
+            moderation = moderate_text(client, query)
+            if moderation.flagged:
+                respond_with_text(
+                    client,
+                    safety_refusal_message(),
+                    voice_replies,
+                    auto_play_audio,
+                )
+                return
 
         # Get conversation history for context
         conversation_history = st.session_state.messages[:-1]
 
-        scope_result = is_in_scope(client, query, conversation_history)
-        if not scope_result.in_scope:
-            respond_with_text(
-                client,
-                out_of_scope_message(),
-                voice_replies,
-                auto_play_audio,
-            )
-            return
+        if not is_load_more:
+            scope_result = is_in_scope(client, query, conversation_history)
+            if not scope_result.in_scope:
+                respond_with_text(
+                    client,
+                    out_of_scope_message(),
+                    voice_replies,
+                    auto_play_audio,
+                )
+                return
 
         tone_nudge = profanity_nudge_message() if contains_profanity(query) else None
 
@@ -671,7 +698,9 @@ def main():
         )
         
         # Check if clarification is needed
-        clarification = check_needs_clarification(client, query, conversation_history, df)
+        clarification = None
+        if not is_load_more:
+            clarification = check_needs_clarification(client, query, conversation_history, df)
         
         if clarification:
             if tone_nudge:
@@ -707,9 +736,37 @@ def main():
         )
         
         _, results, recommendations, extras = run_query(
-            df, embeddings, row_ids, client, query, conversation_history
+            df,
+            embeddings,
+            row_ids,
+            client,
+            query,
+            conversation_history,
+            limit_override=limit_override,
         )
         
+        current_limit = (
+            limit_override
+            if limit_override is not None
+            else parse_top_n(query, default=DEFAULT_RESULT_LIMIT)
+        )
+        display_results = results
+        display_recommendations = recommendations
+        display_extras = extras
+
+        if is_load_more:
+            display_recommendations = []
+            display_extras = None
+            if extras:
+                display_results = results
+            else:
+                if prev_limit is None:
+                    prev_limit = max(0, current_limit - DEFAULT_RESULT_LIMIT)
+                if len(results) > prev_limit:
+                    display_results = results[prev_limit:current_limit]
+                else:
+                    display_results = []
+
         # Phase 3: Generating response
         show_processing_indicator(
             status_placeholder,
@@ -723,12 +780,25 @@ def main():
         data_min_year = int(years.min()) if len(years) > 0 else 1920
         data_max_year = int(years.max()) if len(years) > 0 else 2020
         
-        response_text = build_response(
-            client, query, results, recommendations, conversation_history,
-            min_year=data_min_year, max_year=data_max_year, extras=extras
-        )
+        if is_load_more and not display_results:
+            response_text = "No more movies were found for that request."
+        else:
+            response_text = build_response(
+                client,
+                query,
+                display_results,
+                display_recommendations,
+                conversation_history,
+                min_year=data_min_year,
+                max_year=data_max_year,
+                extras=display_extras,
+            )
         if tone_nudge:
             response_text = f"{tone_nudge}\n\n{response_text}"
+
+        can_load_more = bool(display_extras is None and results and len(results) >= current_limit)
+        st.session_state.last_query = query
+        st.session_state.last_limit = current_limit
         
         # Phase 4: Synthesizing speech
         show_processing_indicator(
@@ -760,6 +830,11 @@ def main():
             st.markdown(response_text, unsafe_allow_html=True)
             if audio_response:
                 st.audio(audio_response, format="audio/mp3", autoplay=auto_play_audio)
+        if can_load_more:
+            if st.button("Load more", key="load_more_btn"):
+                st.session_state.load_more_requested = True
+                st.session_state.load_more_prev_limit = current_limit
+                st.rerun()
 
         # Render results
         render_results_section(results, recommendations)

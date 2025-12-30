@@ -46,6 +46,10 @@ MOVIE_HINTS = (
     "runtime",
     "box office",
     "gross",
+    "superhero",
+    "super hero",
+    "superheroes",
+    "super heroes",
 )
 
 OUT_OF_SCOPE_HINTS = (
@@ -105,11 +109,12 @@ class ScopeResult:
 
 
 def _history_in_scope(conversation_history: List[Dict]) -> bool:
-    for message in conversation_history[-5:]:
-        content = str(message.get("content", ""))
+    for message in reversed(conversation_history):
+        content = str(message.get("content", "")).strip()
+        if not content:
+            continue
         heuristic = _heuristic_scope(content)
-        if heuristic is True:
-            return True
+        return heuristic is True
     return False
 
 

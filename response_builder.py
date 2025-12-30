@@ -21,6 +21,8 @@ def build_response(
             title=extras.get("summary_title", "Summaries"),
             note="Plot overviews are shortened for brevity.",
         )
+    if extras and extras.get("actor_score_context"):
+        return _render_actor_response(results, recommendations, extras["actor_score_context"])
 
     lowered = query.lower()
     if ("release" in lowered or "released" in lowered) and results:
@@ -64,6 +66,65 @@ def _render_movie_cards(results: List[dict]) -> str:
         )
         cards.append(card)
     return "".join(cards)
+
+
+def _render_actor_response(
+    results: List[dict],
+    recommendations: List[dict],
+    context: Dict,
+) -> str:
+    def _fmt(value) -> str:
+        if value is None or value == "" or pd.isna(value):
+            return "Not available"
+        return str(value)
+
+    actor_name = context.get("actor") or "the actor"
+    filters = context.get("filters", {})
+    gross_min = filters.get("gross_min")
+    imdb_min = filters.get("imdb_min")
+    preference = context.get("preference") or "any"
+    assumed_default = context.get("assumed_default", False)
+
+    role_label = "as the lead actor (Star1 only)" if preference == "lead" else "in any role"
+    filter_bits = []
+    if gross_min:
+        filter_bits.append(f"gross over ${gross_min:,.0f}")
+    if imdb_min:
+        filter_bits.append(f"IMDb rating ≥ {imdb_min}")
+    filter_text = f" filtered for {' and '.join(filter_bits)}" if filter_bits else ""
+
+    preface = (
+        f"Here are {actor_name} movies where they appear {role_label}{filter_text}."
+        + (" You didn't specify a role preference, so I included any appearance." if assumed_default else "")
+    )
+
+    if not results:
+        return (
+            preface
+            + " I couldn't find any matches. Try including supporting roles or lowering the revenue/rating thresholds."
+        )
+
+    parts: List[str] = [f"<p>{preface}</p>", _render_movie_cards(results)]
+
+    if recommendations:
+        rec_lines = [
+            f"{_fmt(r.get('Series_Title'))} (IMDb {_fmt(r.get('IMDB_Rating'))} | Meta {_fmt(r.get('Meta_score'))})"
+            for r in recommendations
+        ]
+        parts.append(
+            "<div style='margin-top:12px;'>"
+            "<b>Recommendations with similar IMDb/Meta scores:</b><br>"
+            + "<br>".join(rec_lines)
+            + "</div>"
+        )
+
+    parts.append(
+        "<div style='color:#9ca3af;font-size:13px;margin-top:8px;'>"
+        "Tell me if you prefer only lead roles, want supporting roles included, or would like different revenue/rating cut-offs."
+        "</div>"
+    )
+
+    return "".join(parts)
 
 
 def _render_compound_sections(sections: List[Dict]) -> str:

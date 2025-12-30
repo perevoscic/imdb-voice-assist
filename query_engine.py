@@ -48,7 +48,7 @@ class QueryPlanSpec(_SchemaBase):
     action: Literal["filter_sort", "semantic_search", "hybrid"] = "filter_sort"
     filters: List[FilterSpec] = Field(default_factory=list)
     sort: List[SortSpec] = Field(default_factory=list)
-    limit: int = Field(default=5, ge=1, le=50)
+    limit: int = Field(default=10, ge=1, le=50)
     text_query: Optional[str] = None
 
 
@@ -60,7 +60,7 @@ def _clean_json(text: str) -> str:
     return cleaned
 
 
-def parse_top_n(query: str, default: int = 5) -> int:
+def parse_top_n(query: str, default: int = 10) -> int:
     match = re.search(r"top\s+(\d+)", query.lower())
     if match:
         return int(match.group(1))
@@ -68,6 +68,37 @@ def parse_top_n(query: str, default: int = 5) -> int:
 
 
 STOPWORDS = {"the", "a", "an", "of", "and", "to", "in", "for"}
+
+
+def _parse_role_preference(query: str) -> Optional[str]:
+    lowered = query.lower()
+    if any(term in lowered for term in ["lead", "star1", "primary star", "primary"]):
+        return "lead"
+    if any(term in lowered for term in ["any role", "either", "any", "otherwise", "both"]):
+        return "any"
+    return None
+
+
+def _asked_actor_clarification(actor: str, history: List[Dict]) -> bool:
+    """Check if we've already asked the lead-vs-any question for this actor."""
+    actor_lower = actor.lower()
+    for msg in history:
+        content = msg.get("content", "").lower()
+        if (
+            msg.get("role") == "assistant"
+            and actor_lower in content
+            and "lead actor" in content
+        ):
+            return True
+    return False
+
+
+def _build_actor_clarification(actor: str) -> str:
+    actor_display = actor.strip()
+    return (
+        f"Are you looking for movies where {actor_display} is the lead actor (column Star1), "
+        "or movies where they appear in any role (lead or otherwise)?"
+    )
 
 
 def _normalize(text: str) -> List[str]:
@@ -173,6 +204,40 @@ def parse_threshold(query: str, field: str) -> Optional[int]:
     match = re.search(pattern, query.lower())
     if match:
         return int(match.group(1))
+    return None
+
+
+def _parse_gross_threshold(query: str) -> Optional[float]:
+    """
+    Parse gross threshold with support for M/B suffixes. Returns dollars.
+    Examples: "gross over 50m", "gross >= 120000000", "$200m box office".
+    """
+    lowered = query.lower()
+    match = re.search(r"gross[^0-9]*([\d\.]+)\s*(b|billion|m|million)?", lowered)
+    if not match:
+        # Fallback if dollar sign without keyword
+        match = re.search(r"\$([\d\.]+)\s*(b|billion|m|million)?", lowered)
+    if not match:
+        return None
+    value = float(match.group(1))
+    unit = match.group(2) or ""
+    if unit in {"b", "billion"}:
+        value *= 1_000_000_000
+    elif unit in {"m", "million"}:
+        value *= 1_000_000
+    return value
+
+
+def _parse_imdb_threshold(query: str) -> Optional[float]:
+    """
+    Parse IMDb rating threshold. Supports patterns like:
+    - imdb rating over 8
+    - rating >= 7.5
+    """
+    lowered = query.lower()
+    match = re.search(r"(imdb rating|rating)[^0-9]*([\d\.]+)", lowered)
+    if match:
+        return float(match.group(2))
     return None
 
 
@@ -312,7 +377,11 @@ def check_needs_clarification(
     Use LLM to determine if the query needs clarification.
     Returns the clarification question if needed, None otherwise.
     """
-    return None
+    actor = parse_actor(query, df)
+    if actor:
+        preference = _parse_role_preference(query)
+        if not preference and not _asked_actor_clarification(actor, conversation_history):
+            return _build_actor_clarification(actor)
     # First, check if the query mentions a specific movie that has exactly one match
     # If so, no clarification is needed
     title_match = find_title_match(df, query)
@@ -555,7 +624,7 @@ def plan_query_with_llm(
             text_query=plan_spec.text_query,
         )
     except ValidationError:
-        fallback_limit = parse_top_n(query, default=5)
+        fallback_limit = parse_top_n(query, default=10)
         return QueryPlan(
             action="filter_sort",
             filters=[],
@@ -637,6 +706,69 @@ def recommend_similar(
     return to_movie_cards(rec_df, limit)
 
 
+def _filter_actor_movies(
+    df: pd.DataFrame,
+    actor: str,
+    preference: Optional[str],
+    gross_min: Optional[float],
+    imdb_min: Optional[float],
+) -> pd.DataFrame:
+    """Filter actor movies by role preference and thresholds."""
+    base = df[df["Stars_Lower"].str.contains(actor.lower(), na=False)]
+    if preference == "lead":
+        lead_mask = (
+            base["Primary_Star"]
+            .astype(str)
+            .str.lower()
+            .str.contains(actor.lower(), na=False)
+        )
+        base = base[lead_mask]
+    if gross_min is not None:
+        base = base[base["Gross"].fillna(0) > gross_min]
+    if imdb_min is not None:
+        base = base[base["IMDB_Rating"].fillna(0) >= imdb_min]
+    return base.sort_values(["IMDB_Rating", "Gross"], ascending=[False, False])
+
+
+def _recommend_score_aligned(
+    df: pd.DataFrame,
+    embeddings: np.ndarray,
+    row_ids: List[int],
+    seed_df: pd.DataFrame,
+    limit: int = 3,
+) -> List[dict]:
+    """Recommend movies with similar IMDb/Meta scores to the selection."""
+    if seed_df.empty:
+        return []
+    candidates = recommend_similar(
+        df, embeddings, row_ids, seed_df.index.tolist(), limit=limit * 2
+    )
+    if not candidates:
+        return []
+    rec_df = pd.DataFrame(candidates)
+    if rec_df.empty:
+        return candidates
+
+    rating_min = seed_df["IMDB_Rating"].min() - 0.3
+    rating_max = seed_df["IMDB_Rating"].max() + 0.3
+    rating_mask = rec_df["IMDB_Rating"].between(rating_min, rating_max)
+
+    meta_mean = seed_df["Meta_score"].dropna().mean()
+    if pd.isna(meta_mean):
+        filtered = rec_df[rating_mask]
+    else:
+        meta_mask = rec_df["Meta_score"].between(meta_mean - 5, meta_mean + 5)
+        filtered = rec_df[rating_mask & meta_mask]
+
+    if filtered.empty:
+        filtered = rec_df
+
+    filtered = filtered.sort_values(
+        ["Meta_score", "IMDB_Rating"], ascending=[False, False]
+    ).head(limit)
+    return to_movie_cards(filtered, limit)
+
+
 def _handle_top_directors(df: pd.DataFrame, limit: int) -> pd.DataFrame:
     high_gross = df[df["Gross"].fillna(0) > 500_000_000]
     grouped = high_gross.groupby("Director")
@@ -713,6 +845,18 @@ def _matches_police_before(lowered: str, year_start: Optional[int], year_end: Op
     return has_police and (explicit_time or year_condition)
 
 
+def _matches_superhero(lowered: str) -> bool:
+    superhero_terms = [
+        "superhero",
+        "super hero",
+        "superheroes",
+        "super heroes",
+        "comic book hero",
+        "masked vigilante",
+    ]
+    return any(term in lowered for term in superhero_terms)
+
+
 def run_query(
     df: pd.DataFrame,
     embeddings: np.ndarray,
@@ -720,6 +864,7 @@ def run_query(
     client: OpenAI,
     query: str,
     conversation_history: Optional[List[Dict]] = None,
+    limit_override: Optional[int] = None,
 ) -> Tuple[str, List[dict], List[dict], Optional[Dict]]:
     # Get year range from data for context
     years = df["Released_Year"].dropna()
@@ -730,7 +875,31 @@ def run_query(
     resolved_query = resolve_references(client, query, conversation_history or [])
     
     lowered = resolved_query.lower()
-    limit = parse_top_n(resolved_query, default=5)
+    limit = limit_override if limit_override is not None else parse_top_n(resolved_query, default=10)
+    actor = parse_actor(resolved_query, df)
+
+    # Actor-specific flow with gross/IMDb constraints and role preference.
+    wants_gross_filter = "gross" in lowered or "$" in resolved_query or "box office" in lowered
+    wants_rating_filter = "imdb" in lowered or "rating" in lowered
+    gross_min = _parse_gross_threshold(resolved_query) if wants_gross_filter else None
+    imdb_min = _parse_imdb_threshold(resolved_query) if wants_rating_filter else None
+    if wants_rating_filter and imdb_min is None:
+        imdb_min = 8.0
+
+    if actor and (gross_min is not None or imdb_min is not None):
+        role_pref = _parse_role_preference(resolved_query)
+        actor_results = _filter_actor_movies(df, actor, role_pref, gross_min, imdb_min)
+        cards = to_movie_cards(actor_results, limit)
+        recs = _recommend_score_aligned(df, embeddings, row_ids, actor_results, limit=3)
+        extras = {
+            "actor_score_context": {
+                "actor": actor,
+                "preference": role_pref or "any",
+                "filters": {"gross_min": gross_min, "imdb_min": imdb_min},
+                "assumed_default": role_pref is None,
+            }
+        }
+        return "filtered", cards, recs, extras
 
     title_match = find_title_match(df, resolved_query)
     if title_match and ("release" in lowered or "released" in lowered):
@@ -756,6 +925,7 @@ def run_query(
         "steven spielberg" in lowered and ("sci-fi" in lowered or "science fiction" in lowered)
     )
     wants_police_before = _matches_police_before(lowered, year_start, year_end)
+    wants_superhero = _matches_superhero(lowered)
     wants_summary = any(term in lowered for term in ["summary", "summaries", "summarize", "plot", "plots"])
 
     if wants_spielberg_scifi and wants_police_before and wants_summary:
@@ -842,6 +1012,25 @@ def run_query(
         recs = recommend_similar(df, embeddings, row_ids, results.index.tolist())
         return "semantic", cards, recs, None
 
+    if wants_superhero:
+        allowed_ids = None
+        if year_start and year_end:
+            if "before" in lowered and year_start == year_end:
+                allowed_ids = df[df["Released_Year"].fillna(0) < year_start].index.tolist()
+            elif "after" in lowered and year_start == year_end:
+                allowed_ids = df[df["Released_Year"].fillna(0) > year_start].index.tolist()
+            else:
+                allowed_ids = df[df["Released_Year"].between(year_start, year_end)].index.tolist()
+        query_vector = embed_query(
+            client,
+            "superhero, super hero, comic book hero, masked vigilante, marvel, dc, "
+            "avengers, batman, spiderman",
+        )
+        results = semantic_rank(df, embeddings, row_ids, query_vector, limit, allowed_ids)
+        cards = to_movie_cards(results, limit)
+        recs = recommend_similar(df, embeddings, row_ids, results.index.tolist())
+        return "semantic", cards, recs, None
+
     # Handle director queries
     director = parse_director(resolved_query, df)
     if director and ("direct" in lowered or "by" in lowered or "movie" in lowered or "film" in lowered):
@@ -852,7 +1041,6 @@ def run_query(
         return "filtered", cards, recs, None
 
     # Handle actor queries
-    actor = parse_actor(resolved_query, df)
     if actor:
         # Search in Stars_Lower which contains all Star1-4 combined
         filtered = df[df["Stars_Lower"].str.contains(actor, na=False)]
@@ -863,14 +1051,17 @@ def run_query(
 
     try:
         plan = plan_query_with_llm(
-            client, 
-            resolved_query, 
+            client,
+            resolved_query,
             conversation_history,
             min_year=data_min_year,
-            max_year=data_max_year
+            max_year=data_max_year,
         )
     except Exception:
         plan = QueryPlan(action="filter_sort", filters=[], sort=[], limit=limit)
+
+    if limit_override is not None:
+        plan.limit = limit
 
     filtered = df
     if plan.filters:
