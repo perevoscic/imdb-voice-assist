@@ -93,12 +93,33 @@ def _asked_actor_clarification(actor: str, history: List[Dict]) -> bool:
     return False
 
 
-def _build_actor_clarification(actor: str) -> str:
+def _build_actor_clarification(client: OpenAI, actor: str) -> str:
     actor_display = actor.strip()
-    return (
-        f"Are you looking for movies where {actor_display} is the lead actor (column Star1), "
-        "or movies where they appear in any role (lead or otherwise)?"
+    system = (
+        "You are a helpful movie assistant. The user asked about an actor, but it's unclear "
+        "if they want only lead roles (where the actor is the main star) or any role (supporting, etc). "
+        "Ask the user to clarify this preference."
     )
+    user = (
+        f"The user asked about {actor_display}. Ask them if they mean movies where {actor_display} "
+        "is the lead star, or any movie where they appear? Be brief, natural, and polite."
+    )
+    try:
+        response = client.chat.completions.create(
+            model=os.getenv("CHAT_MODEL", "gpt-4o-mini"),
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            max_tokens=60,
+            temperature=0.7,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception:
+        return (
+            f"Would you like to see movies where {actor_display} is the lead star, "
+            "or should I include any movie where they appear?"
+        )
 
 
 def _normalize(text: str) -> List[str]:
@@ -393,7 +414,7 @@ def check_needs_clarification(
     if actor:
         preference = _parse_role_preference(query)
         if not preference and not _asked_actor_clarification(actor, conversation_history):
-            return _build_actor_clarification(actor)
+            return _build_actor_clarification(client, actor)
     # First, check if the query mentions a specific movie that has exactly one match
     # If so, no clarification is needed
     title_match = find_title_match(df, query)

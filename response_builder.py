@@ -85,7 +85,7 @@ def _render_actor_response(
     preference = context.get("preference") or "any"
     assumed_default = context.get("assumed_default", False)
 
-    role_label = "as the lead actor (Star1 only)" if preference == "lead" else "in any role"
+    role_label = "as the lead actor" if preference == "lead" else "in any role"
     filter_bits = []
     if gross_min:
         filter_bits.append(f"gross over ${gross_min:,.0f}")
