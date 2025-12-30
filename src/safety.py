@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from openai import OpenAI
 
@@ -89,7 +89,7 @@ PROFANITY_WORDS = (
     "crap",
 )
 PROFANITY_RE = re.compile(rf"\\b({'|'.join(PROFANITY_WORDS)})\\b", re.IGNORECASE)
-YEAR_RE = re.compile(r"\\b(19\\d{{2}}|20\\d{{2}})\\b")
+YEAR_RE = re.compile(r"\b(19\d{2}|20\d{2})\b")
 
 
 @dataclass
@@ -102,6 +102,15 @@ class ModerationResult:
 class ScopeResult:
     in_scope: bool
     used_llm: bool
+
+
+def _history_in_scope(conversation_history: List[Dict]) -> bool:
+    for message in conversation_history[-5:]:
+        content = str(message.get("content", ""))
+        heuristic = _heuristic_scope(content)
+        if heuristic is True:
+            return True
+    return False
 
 
 def moderate_text(client: OpenAI, text: str) -> ModerationResult:
@@ -136,22 +145,34 @@ def _heuristic_scope(text: str) -> Optional[bool]:
     return None
 
 
-def is_in_scope(client: OpenAI, text: str) -> ScopeResult:
+def is_in_scope(
+    client: OpenAI, text: str, conversation_history: Optional[List[Dict]] = None
+) -> ScopeResult:
     heuristic = _heuristic_scope(text)
     if heuristic is not None:
         return ScopeResult(in_scope=heuristic, used_llm=False)
+
+    if conversation_history and _history_in_scope(conversation_history):
+        return ScopeResult(in_scope=True, used_llm=False)
 
     system = (
         "You are a classifier. Determine if the user's message is about movies or "
         "the IMDb dataset (movies, directors, actors, ratings, plots, genres, years). "
         "Answer only 'yes' or 'no'."
     )
+    history_text = ""
+    if conversation_history:
+        recent = conversation_history[-5:]
+        history_lines = [
+            f"{msg.get('role', 'user')}: {msg.get('content', '')}" for msg in recent
+        ]
+        history_text = "Conversation history:\n" + "\n".join(history_lines) + "\n\n"
     try:
         response = client.chat.completions.create(
             model=os.getenv("SCOPE_MODEL", os.getenv("CHAT_MODEL", "gpt-4o-mini")),
             messages=[
                 {"role": "system", "content": system},
-                {"role": "user", "content": text},
+                {"role": "user", "content": f"{history_text}Current message: {text}"},
             ],
             max_tokens=5,
             temperature=0,

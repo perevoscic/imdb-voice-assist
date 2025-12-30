@@ -1,37 +1,27 @@
-import json
-import os
 from typing import Dict, List, Optional
 
-from openai import OpenAI
-
-
-def _format_conversation_for_response(messages: List[Dict], max_turns: int = 3) -> str:
-    """Format recent conversation history for response generation."""
-    if not messages:
-        return ""
-    
-    # Get last N turns
-    recent = messages[-(max_turns * 2):]
-    
-    formatted = []
-    for msg in recent:
-        role = msg.get("role", "user")
-        content = msg.get("content", "")
-        if content:
-            formatted.append(f"{role.upper()}: {content}")
-    
-    return "\n".join(formatted)
+import pandas as pd
 
 
 def build_response(
-    client: OpenAI,
+    client,
     query: str,
     results: List[dict],
     recommendations: List[dict],
     conversation_history: Optional[List[Dict]] = None,
     min_year: int = 1920,
     max_year: int = 2020,
+    extras: Optional[Dict] = None,
 ) -> str:
+    if extras and extras.get("compound_sections"):
+        return _render_compound_sections(extras["compound_sections"])
+    if extras and extras.get("summary_items"):
+        return _render_summaries(
+            extras["summary_items"],
+            title=extras.get("summary_title", "Summaries"),
+            note="Plot overviews are shortened for brevity.",
+        )
+
     lowered = query.lower()
     if ("release" in lowered or "released" in lowered) and results:
         movie = results[0]
@@ -40,40 +30,129 @@ def build_response(
             if isinstance(year, float) and year.is_integer():
                 year = int(year)
             return str(year)
+
+    if not results:
+        return "No matching movies were found for the given criteria."
+
+    return _render_movie_cards(results)
     
-    history_str = _format_conversation_for_response(conversation_history or [])
-    
-    system = (
-        "You answer questions about IMDB movies using ONLY the provided data. "
-        "Do not add facts that are not explicitly present in the data. "
-        "If a specific detail (like an exact release date) is missing, say that it is not available "
-        "and provide the closest available information (e.g., Released_Year). "
-        "Include a concise answer, brief reasoning, and 1-2 suggestions for follow-up questions. "
-        "If asked to summarize plots, summarize using Overview fields. "
-        "If results are empty, say so and suggest a refined query. "
-        "Use conversation history to understand context and maintain a natural conversational flow. "
-        "When the user refers to previous topics (e.g., 'that movie', 'tell me more'), "
-        "acknowledge the context naturally in your response. "
-        f"IMPORTANT: The database contains movies from {min_year} to {max_year}. "
-        "When no specific time period is mentioned, results are from the FULL available range. "
-        "Do NOT ask clarifying questions about time periods or year ranges - "
-        "just provide the answer based on all available data."
-    )
-    
-    payload = {
-        "conversation_history": history_str if history_str else None,
-        "current_query": query,
-        "results": results,
-        "recommendations": recommendations,
-    }
-    
-    response = client.chat.completions.create(
-        model=os.getenv("CHAT_MODEL", "gpt-4o-mini"),
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": json.dumps(payload)},
-        ],
-        temperature=0.4,
-        max_tokens=700,
-    )
-    return response.choices[0].message.content
+    # LLM formatting removed to guarantee all results are shown.
+
+
+def _render_movie_cards(results: List[dict]) -> str:
+    def _fmt(value) -> str:
+        if value is None or value == "" or pd.isna(value):
+            return "Not available"
+        return str(value)
+
+    cards = []
+    for movie in results:
+        year = movie.get("Released_Year")
+        if isinstance(year, float) and year.is_integer():
+            year = int(year)
+        card = (
+            "<div style='display:flex;gap:16px;margin-bottom:20px;'>"
+            f"<img src='{_fmt(movie.get('Poster_Link'))}' width='100'>"
+            "<div>"
+            f"<b>{_fmt(movie.get('Series_Title'))} ({_fmt(year)})</b><br>"
+            f"Genre: {_fmt(movie.get('Genre'))}<br>"
+            f"IMDb: {_fmt(movie.get('IMDB_Rating'))} | Meta: {_fmt(movie.get('Meta_score'))}<br>"
+            f"Director: {_fmt(movie.get('Director'))}<br>"
+            f"Overview: {_fmt(movie.get('Overview'))}"
+            "</div>"
+            "</div>"
+        )
+        cards.append(card)
+    return "".join(cards)
+
+
+def _render_compound_sections(sections: List[Dict]) -> str:
+    def _fmt(value) -> str:
+        if value is None or value == "" or pd.isna(value):
+            return "Not available"
+        return str(value)
+
+    def _shorten(text: Optional[str], limit: int = 220) -> str:
+        if not text:
+            return "Not available"
+        text = str(text).strip()
+        if len(text) <= limit:
+            return text
+        cutoff = text.rfind(". ", 0, limit)
+        if cutoff == -1:
+            cutoff = limit
+        return text[:cutoff].rstrip() + "..."
+
+    parts: List[str] = []
+    for section in sections:
+        items = section.get("items") or []
+        if not items:
+            continue
+        title = _fmt(section.get("title") or "")
+        note = section.get("note")
+        parts.append(
+            "<div style='margin-bottom:22px;'>"
+            f"<h4 style='margin:0 0 6px 0;'>{title}</h4>"
+        )
+        if note:
+            parts.append(
+                f"<div style='color:#9ca3af;font-size:13px;margin-bottom:8px;'>{_fmt(note)}</div>"
+            )
+        for movie in items:
+            year = movie.get("Released_Year")
+            if isinstance(year, float) and year.is_integer():
+                year = int(year)
+            overview = _shorten(movie.get("Overview"))
+            card = (
+                "<div style='display:flex;gap:14px;margin-bottom:14px;'>"
+                f"<img src='{_fmt(movie.get('Poster_Link'))}' width='90'>"
+                "<div>"
+                f"<b>{_fmt(movie.get('Series_Title'))} ({_fmt(year)})</b><br>"
+                f"IMDb: {_fmt(movie.get('IMDB_Rating'))} | Meta: {_fmt(movie.get('Meta_score'))}<br>"
+                f"Genre: {_fmt(movie.get('Genre'))} | Director: {_fmt(movie.get('Director'))}<br>"
+                f"Plot: {overview}"
+                "</div>"
+                "</div>"
+            )
+            parts.append(card)
+        parts.append("</div>")
+    return "".join(parts)
+
+
+def _render_summaries(items: List[dict], title: str, note: Optional[str] = None) -> str:
+    def _fmt(value) -> str:
+        if value is None or value == "" or pd.isna(value):
+            return "Not available"
+        return str(value)
+
+    def _shorten(text: Optional[str], limit: int = 260) -> str:
+        if not text:
+            return "Not available"
+        text = str(text).strip()
+        if len(text) <= limit:
+            return text
+        cutoff = text.rfind(". ", 0, limit)
+        if cutoff == -1:
+            cutoff = limit
+        return text[:cutoff].rstrip() + "..."
+
+    parts: List[str] = [
+        "<div style='margin-bottom:18px;'>"
+        f"<h4 style='margin:0 0 6px 0;'>{_fmt(title)}</h4>"
+    ]
+    if note:
+        parts.append(
+            f"<div style='color:#9ca3af;font-size:13px;margin-bottom:8px;'>{_fmt(note)}</div>"
+        )
+    for movie in items:
+        year = movie.get("Released_Year")
+        if isinstance(year, float) and year.is_integer():
+            year = int(year)
+        summary = _shorten(movie.get("Overview"))
+        parts.append(
+            "<div style='margin-bottom:12px;'>"
+            f"<b>{_fmt(movie.get('Series_Title'))} ({_fmt(year)})</b> — {summary}"
+            "</div>"
+        )
+    parts.append("</div>")
+    return "".join(parts)

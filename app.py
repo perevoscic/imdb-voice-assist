@@ -102,14 +102,7 @@ def clear_conversation():
 
 def render_empty_state():
     """Render the empty state when there are no messages."""
-    st.markdown("""
-    <div style="text-align: center; padding: 4rem 2rem; color: #64748b;">
-        <div style="font-size: 5rem; margin-bottom: 1.5rem; opacity: 0.6; animation: pulse 3s ease-in-out infinite;">🎙️</div>
-        <p style="font-size: 1.15rem; max-width: 450px; margin: 0 auto; line-height: 1.7; color: #94a3b8;">
-            Tap the mic to speak or type your question below
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
+    pass
 
 
 def render_safety_section():
@@ -199,8 +192,20 @@ def show_processing_indicator(status_placeholder, status: str, substatus: str = 
     """, unsafe_allow_html=True)
 
 
+def _data_cache_key(config: ImdbConfig) -> str:
+    """Cache-buster tied to the CSV file; updates invalidate cached data."""
+    path = config.csv_path
+    try:
+        stat = os.stat(path)
+        return f"{path}:{stat.st_mtime_ns}:{stat.st_size}"
+    except FileNotFoundError:
+        return f"{path}:missing"
+
+
 @st.cache_data(show_spinner=False)
-def get_data():
+def get_data(cache_key: str):
+    # cache_key ensures Streamlit invalidates the cache when the CSV changes
+    _ = cache_key  # silence unused variable lint while keeping cache binding
     config = ImdbConfig()
     df = load_imdb_data(config)
     return df
@@ -215,7 +220,7 @@ def get_vector_store() -> tuple:
 
 
 def build_vector_store(client: OpenAI):
-    df = get_data()
+    df = get_data(_data_cache_key(ImdbConfig()))
     texts = df["Overview"].fillna("").astype(str).tolist()
     model = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
     embeddings = build_embeddings(client, texts, model=model)
@@ -233,7 +238,27 @@ def build_vector_store(client: OpenAI):
     st.cache_resource.clear()
 
 
-def resolve_input(audio_bytes: Optional[bytes], text_input: Optional[str], client: OpenAI, status_placeholder=None) -> Optional[str]:
+def _suffix_from_mime(mime_type: Optional[str]) -> Optional[str]:
+    if not mime_type:
+        return None
+    mapping = {
+        "audio/wav": ".wav",
+        "audio/x-wav": ".wav",
+        "audio/webm": ".webm",
+        "audio/ogg": ".ogg",
+        "audio/mpeg": ".mp3",
+        "audio/mp4": ".m4a",
+    }
+    return mapping.get(mime_type)
+
+
+def resolve_input(
+    audio_bytes: Optional[bytes],
+    text_input: Optional[str],
+    client: OpenAI,
+    status_placeholder=None,
+    audio_suffix: Optional[str] = None,
+) -> Optional[str]:
     if audio_bytes:
         if status_placeholder:
             show_processing_indicator(
@@ -242,7 +267,14 @@ def resolve_input(audio_bytes: Optional[bytes], text_input: Optional[str], clien
                 "Transcribing audio with Whisper AI",
                 50
             )
-        transcript = transcribe_audio(client, audio_bytes)
+        try:
+            transcript = transcribe_audio(client, audio_bytes, suffix=audio_suffix)
+        except Exception:
+            logger.exception("Voice transcription failed")
+            if status_placeholder:
+                status_placeholder.empty()
+            st.error("Voice transcription failed. Please try again.")
+            return None
         if status_placeholder:
             status_placeholder.empty()
         return transcript
@@ -292,22 +324,14 @@ def _format_display(items):
 
 
 def render_results_section(results, recommendations):
-    """Render the results and recommendations sections."""
+    """Render the results and recommendations as tables (posters are in AI response)."""
     if results:
         st.markdown("""
         <div class="results-header">
-            <span class="icon">🎯</span>
-            <h3>Search Results</h3>
+            <span class="icon">📊</span>
+            <h3>Full Details</h3>
         </div>
         """, unsafe_allow_html=True)
-        
-        cols = st.columns(min(len(results), 5))
-        for idx, item in enumerate(results):
-            poster = item.get("Poster_Link")
-            title = item.get("Series_Title", "Movie")
-            with cols[idx % len(cols)]:
-                if poster:
-                    st.image(poster, width=140, caption=title)
         st.dataframe(_format_display(results), width="stretch")
     
     if recommendations:
@@ -317,14 +341,6 @@ def render_results_section(results, recommendations):
             <h3>You Might Also Like</h3>
         </div>
         """, unsafe_allow_html=True)
-        
-        cols = st.columns(min(len(recommendations), 5))
-        for idx, item in enumerate(recommendations):
-            poster = item.get("Poster_Link")
-            title = item.get("Series_Title", "Movie")
-            with cols[idx % len(cols)]:
-                if poster:
-                    st.image(poster, width=120, caption=title)
         st.dataframe(_format_display(recommendations), width="stretch")
 
 
@@ -350,7 +366,7 @@ def main():
 
     client = OpenAI(timeout=float(os.getenv("OPENAI_TIMEOUT", "30")))
 
-    df = get_data()
+    df = get_data(_data_cache_key(ImdbConfig()))
     embeddings, row_ids, meta = get_vector_store()
 
     if embeddings.size == 0:
@@ -439,7 +455,7 @@ def main():
         for message in st.session_state.messages:
             avatar = "👤" if message["role"] == "user" else "🎬"
             with st.chat_message(message["role"], avatar=avatar):
-                st.markdown(message["content"])
+                st.markdown(message["content"], unsafe_allow_html=True)
                 if message.get("audio"):
                     st.audio(message["audio"], format="audio/mp3", autoplay=auto_play_audio)
 
@@ -478,7 +494,11 @@ def main():
             st.session_state.audio_buffer_samples = 0
             st.session_state.last_transcribe_ts = time.time()
             if wav_bytes:
-                chunk_text = transcribe_audio(client, wav_bytes)
+                try:
+                    chunk_text = transcribe_audio(client, wav_bytes, suffix=".wav")
+                except Exception:
+                    logger.exception("Realtime voice transcription failed")
+                    chunk_text = None
                 if chunk_text:
                     if st.session_state.live_transcript:
                         st.session_state.live_transcript = f"{st.session_state.live_transcript.strip()} {chunk_text.strip()}"
@@ -491,7 +511,11 @@ def main():
             st.session_state.audio_frame_buffer = []
             st.session_state.audio_buffer_samples = 0
             if wav_bytes:
-                tail_text = transcribe_audio(client, wav_bytes)
+                try:
+                    tail_text = transcribe_audio(client, wav_bytes, suffix=".wav")
+                except Exception:
+                    logger.exception("Realtime voice transcription failed")
+                    tail_text = None
                 if tail_text:
                     if st.session_state.live_transcript:
                         st.session_state.live_transcript = f"{st.session_state.live_transcript.strip()} {tail_text.strip()}"
@@ -526,7 +550,7 @@ def main():
             if user_input:
                 query = user_input
     else:
-        input_col, mic_col = st.columns([3, 2])
+        input_col, mic_col = st.columns([7, 1])
         with input_col:
             user_input = st.chat_input("Ask about movies, directors, ratings, plot...")
         with mic_col:
@@ -541,7 +565,19 @@ def main():
             audio_hash = hashlib.sha256(audio_bytes).hexdigest()
             if audio_hash != st.session_state.last_audio_hash:
                 st.session_state.last_audio_hash = audio_hash
-                transcript = resolve_input(audio_bytes, None, client, voice_status)
+                audio_suffix = None
+                if getattr(audio_input, "name", None):
+                    _, ext = os.path.splitext(audio_input.name)
+                    audio_suffix = ext or None
+                if not audio_suffix:
+                    audio_suffix = _suffix_from_mime(getattr(audio_input, "type", None))
+                transcript = resolve_input(
+                    audio_bytes,
+                    None,
+                    client,
+                    voice_status,
+                    audio_suffix=audio_suffix,
+                )
                 if transcript:
                     if auto_send_voice:
                         query = transcript
@@ -601,7 +637,10 @@ def main():
             )
             return
 
-        scope_result = is_in_scope(client, query)
+        # Get conversation history for context
+        conversation_history = st.session_state.messages[:-1]
+
+        scope_result = is_in_scope(client, query, conversation_history)
         if not scope_result.in_scope:
             respond_with_text(
                 client,
@@ -612,9 +651,6 @@ def main():
             return
 
         tone_nudge = profanity_nudge_message() if contains_profanity(query) else None
-
-        # Get conversation history for context
-        conversation_history = st.session_state.messages[:-1]
 
         # Handle pending clarification responses
         if st.session_state.pending_clarification:
@@ -670,7 +706,7 @@ def main():
             40
         )
         
-        _, results, recommendations = run_query(
+        _, results, recommendations, extras = run_query(
             df, embeddings, row_ids, client, query, conversation_history
         )
         
@@ -689,7 +725,7 @@ def main():
         
         response_text = build_response(
             client, query, results, recommendations, conversation_history,
-            min_year=data_min_year, max_year=data_max_year
+            min_year=data_min_year, max_year=data_max_year, extras=extras
         )
         if tone_nudge:
             response_text = f"{tone_nudge}\n\n{response_text}"
@@ -721,7 +757,7 @@ def main():
             {"role": "assistant", "content": response_text, "audio": audio_response}
         )
         with st.chat_message("assistant", avatar="🎬"):
-            st.markdown(response_text)
+            st.markdown(response_text, unsafe_allow_html=True)
             if audio_response:
                 st.audio(audio_response, format="audio/mp3", autoplay=auto_play_audio)
 

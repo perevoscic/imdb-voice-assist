@@ -19,6 +19,14 @@ def clean_text_for_speech(text: str) -> str:
     text = re.sub(r'!\[.*?\]\(.*?\)', '', text)
     text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
     
+    # Remove all HTML tags but keep their text content
+    # First remove self-closing tags like <img>, <br>, <hr>
+    text = re.sub(r'<(?:img|br|hr)[^>]*/?>', '', text, flags=re.IGNORECASE)
+    # Remove opening tags with attributes (like <div style='...'>) 
+    text = re.sub(r'<[a-z][a-z0-9]*[^>]*>', '', text, flags=re.IGNORECASE)
+    # Remove closing tags
+    text = re.sub(r'</[a-z][a-z0-9]*>', '', text, flags=re.IGNORECASE)
+    
     # Remove "Poster:" or "Poster_Link:" labels and their values
     text = re.sub(r'\*?\*?Poster(?:_Link)?:?\*?\*?\s*\S*', '', text, flags=re.IGNORECASE)
     
@@ -34,8 +42,8 @@ def clean_text_for_speech(text: str) -> str:
     # Remove markdown headers
     text = re.sub(r'^#+\s*', '', text, flags=re.MULTILINE)
     
-    # Remove bullet points but keep the text
-    text = re.sub(r'^\s*[-*•]\s*', '', text, flags=re.MULTILINE)
+    # Remove bullet points but keep the text (including Unicode bullets)
+    text = re.sub(r'^\s*[-*•◦○►▸▹→‣⁃]\s*', '', text, flags=re.MULTILINE)
     
     # Remove numbered list markers but keep the text
     text = re.sub(r'^\s*\d+\.\s*', '', text, flags=re.MULTILINE)
@@ -51,10 +59,17 @@ def clean_text_for_speech(text: str) -> str:
     return text.strip()
 
 
-def transcribe_audio(client: OpenAI, audio_bytes: bytes) -> Optional[str]:
+def transcribe_audio(
+    client: OpenAI,
+    audio_bytes: bytes,
+    suffix: Optional[str] = None,
+) -> Optional[str]:
     if not audio_bytes:
         return None
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+    suffix = suffix or ".wav"
+    if not suffix.startswith("."):
+        suffix = f".{suffix}"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(audio_bytes)
         tmp_path = tmp.name
     try:

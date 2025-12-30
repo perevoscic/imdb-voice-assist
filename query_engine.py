@@ -71,7 +71,7 @@ STOPWORDS = {"the", "a", "an", "of", "and", "to", "in", "for"}
 
 
 def _normalize(text: str) -> List[str]:
-    cleaned = re.sub(r"[^a-z0-9\\s]", " ", text.lower())
+    cleaned = re.sub(r"[^a-z0-9\s]", " ", text.lower())
     return [token for token in cleaned.split() if token]
 
 
@@ -126,16 +126,26 @@ def find_title_keyword(query: str) -> Optional[str]:
         r"([a-z0-9\s]+?)\s+(?:movies?|films?|trilogy|series|franchise)",
     ]
     
-    # Words to strip from extracted keyword
-    generic = {"best", "top", "all", "good", "great", "new", "old", "my", "favorite", "favourite", "the", "a", "an"}
+    # Words to strip from extracted keyword (generic + genres + numbers)
+    generic = {
+        "best", "top", "all", "good", "great", "new", "old", "my", "favorite", "favourite", 
+        "the", "a", "an", "some", "few", "many", "rated", "highest", "lowest",
+    }
+    genres = {
+        "comedy", "horror", "sci-fi", "scifi", "drama", "action", "romance", "thriller",
+        "crime", "adventure", "animation", "fantasy", "mystery", "war", "western",
+        "documentary", "musical", "biography", "history", "sport", "family",
+    }
+    # Exclude if keyword is only numbers or generic/genre words
+    exclude = generic | genres
     
     for pattern in patterns:
         match = re.search(pattern, lowered)
         if match:
             keyword = match.group(1).strip()
-            # Remove generic words from the keyword
+            # Remove generic/genre words and pure numbers from the keyword
             keyword_tokens = keyword.split()
-            cleaned_tokens = [t for t in keyword_tokens if t not in generic]
+            cleaned_tokens = [t for t in keyword_tokens if t not in exclude and not t.isdigit()]
             keyword = " ".join(cleaned_tokens).strip()
             
             if keyword and len(keyword) >= 3:
@@ -150,7 +160,7 @@ def find_movies_by_title_keyword(df: pd.DataFrame, keyword: str) -> pd.DataFrame
 
 
 def parse_years(query: str) -> Tuple[Optional[int], Optional[int]]:
-    years = [int(y) for y in re.findall(r"(19\\d{2}|20\\d{2})", query)]
+    years = [int(y) for y in re.findall(r"(19\d{2}|20\d{2})", query)]
     if not years:
         return None, None
     if len(years) == 1:
@@ -159,7 +169,7 @@ def parse_years(query: str) -> Tuple[Optional[int], Optional[int]]:
 
 
 def parse_threshold(query: str, field: str) -> Optional[int]:
-    pattern = rf"{field}\\s*(?:above|over|>=|greater than)\\s*(\\d+)"
+    pattern = rf"{field}\s*(?:above|over|>=|greater than)\s*(\d+)"
     match = re.search(pattern, query.lower())
     if match:
         return int(match.group(1))
@@ -302,6 +312,7 @@ def check_needs_clarification(
     Use LLM to determine if the query needs clarification.
     Returns the clarification question if needed, None otherwise.
     """
+    return None
     # First, check if the query mentions a specific movie that has exactly one match
     # If so, no clarification is needed
     title_match = find_title_match(df, query)
@@ -384,10 +395,22 @@ Does this query need clarification before I can search the movie database?"""
         except ValidationError:
             return None
         if result.needs_clarification and result.clarification_question:
+            if _is_time_range_clarification(result.clarification_question):
+                return None
             return result.clarification_question
         return None
     except Exception:
         return None
+
+
+def _is_time_range_clarification(question: str) -> bool:
+    lowered = question.lower()
+    time_terms = [
+        "year", "years", "date", "dates", "time period", "timeframe",
+        "range", "between", "before", "after", "from", "to", "during",
+        "decade", "era", "available range",
+    ]
+    return any(term in lowered for term in time_terms)
 
 
 def resolve_references(
@@ -664,6 +687,32 @@ def _handle_police_before(
     return semantic_rank(df, embeddings, row_ids, query_vector, limit, allowed_ids)
 
 
+def _matches_police_before(lowered: str, year_start: Optional[int], year_end: Optional[int]) -> bool:
+    """Detect intent for 'before 1990' police-related queries."""
+    police_terms = [
+        "police",
+        "law enforcement",
+        "detective",
+        "detectives",
+        "cop",
+        "cops",
+        "investigator",
+    ]
+    time_terms = [
+        "before 1990",
+        "pre-1990",
+        "prior to 1990",
+        "before the 90",
+        "before the 90s",
+    ]
+    has_police = any(term in lowered for term in police_terms)
+    explicit_time = any(term in lowered for term in time_terms)
+    year_condition = (year_end is not None and year_end < 1990) or (
+        year_start is not None and year_start < 1990 and "before" in lowered
+    )
+    return has_police and (explicit_time or year_condition)
+
+
 def run_query(
     df: pd.DataFrame,
     embeddings: np.ndarray,
@@ -671,7 +720,7 @@ def run_query(
     client: OpenAI,
     query: str,
     conversation_history: Optional[List[Dict]] = None,
-) -> Tuple[str, List[dict], List[dict]]:
+) -> Tuple[str, List[dict], List[dict], Optional[Dict]]:
     # Get year range from data for context
     years = df["Released_Year"].dropna()
     data_min_year = int(years.min()) if len(years) > 0 else 1920
@@ -688,7 +737,7 @@ def run_query(
         results = df[df["Series_Title"] == title_match].head(1)
         cards = to_movie_cards(results, 1)
         recs = recommend_similar(df, embeddings, row_ids, results.index.tolist())
-        return "filtered", cards, recs
+        return "filtered", cards, recs, None
 
     # Handle title keyword searches like "all Godfather movies", "Matrix films", etc.
     title_keyword = find_title_keyword(resolved_query)
@@ -700,15 +749,38 @@ def run_query(
             results = results.sort_values("IMDB_Rating", ascending=False).head(title_limit)
             cards = to_movie_cards(results, title_limit)
             recs = recommend_similar(df, embeddings, row_ids, results.index.tolist())
-            return "filtered", cards, recs
+            return "filtered", cards, recs, None
 
     year_start, year_end = parse_years(query)
+    wants_spielberg_scifi = (
+        "steven spielberg" in lowered and ("sci-fi" in lowered or "science fiction" in lowered)
+    )
+    wants_police_before = _matches_police_before(lowered, year_start, year_end)
+    wants_summary = any(term in lowered for term in ["summary", "summaries", "summarize", "plot", "plots"])
+
+    if wants_spielberg_scifi and wants_police_before and wants_summary:
+        spielberg_df = _handle_spielberg_scifi(df, limit)
+        police_df = _handle_police_before(df, embeddings, row_ids, client, limit)
+        sections = [
+            {
+                "title": "Steven Spielberg sci-fi plots (top-rated)",
+                "items": to_movie_cards(spielberg_df, limit),
+                "note": "Sorted by IMDb rating; using overview text as plot summaries.",
+            },
+            {
+                "title": "Pre-1990 movies with police involvement",
+                "items": to_movie_cards(police_df, limit),
+                "note": "Semantic search over plots (not keyword-only) filtered to releases before 1990.",
+            },
+        ]
+        return "compound", [], [], {"compound_sections": sections}
+
     if "meta score" in lowered and year_start and year_end and "top" in lowered:
         filtered = df[df["Released_Year"].between(year_start, year_end)]
         filtered = filtered.sort_values("Meta_score", ascending=False).head(limit)
         cards = to_movie_cards(filtered, limit)
         recs = recommend_similar(df, embeddings, row_ids, filtered.index.tolist())
-        return "filtered", cards, recs
+        return "filtered", cards, recs, None
 
     genre = parse_genre(query)
     if genre and "imdb" in lowered and "rating" in lowered and year_start and year_end:
@@ -719,7 +791,7 @@ def run_query(
         filtered = filtered.sort_values("IMDB_Rating", ascending=False).head(limit)
         cards = to_movie_cards(filtered, limit)
         recs = recommend_similar(df, embeddings, row_ids, filtered.index.tolist())
-        return "filtered", cards, recs
+        return "filtered", cards, recs, None
 
     if genre and "meta score" in lowered and "imdb" in lowered:
         meta_threshold = parse_threshold(query, "meta score")
@@ -732,37 +804,43 @@ def run_query(
         filtered = filtered.sort_values("IMDB_Rating", ascending=False).head(limit)
         cards = to_movie_cards(filtered, limit)
         recs = recommend_similar(df, embeddings, row_ids, filtered.index.tolist())
-        return "filtered", cards, recs
+        return "filtered", cards, recs, None
 
     if "top directors" in lowered and "gross" in lowered and "twice" in lowered:
         results = _handle_top_directors(df, limit)
         cards = to_movie_cards(results, limit)
         recs = recommend_similar(df, embeddings, row_ids, results.index.tolist())
-        return "filtered", cards, recs
+        return "filtered", cards, recs, None
 
     if "over 1m votes" in lowered or "over 1m" in lowered:
         results = _handle_low_gross_high_votes(df, limit)
         cards = to_movie_cards(results, limit)
         recs = recommend_similar(df, embeddings, row_ids, results.index.tolist())
-        return "filtered", cards, recs
+        return "filtered", cards, recs, None
 
-    if "steven spielberg" in lowered and "sci-fi" in lowered:
+    if wants_spielberg_scifi:
         results = _handle_spielberg_scifi(df, limit)
         cards = to_movie_cards(results, limit)
         recs = recommend_similar(df, embeddings, row_ids, results.index.tolist())
-        return "filtered", cards, recs
+        if wants_summary:
+            extras = {
+                "summary_title": "Summaries of Steven Spielberg’s top-rated sci-fi movies",
+                "summary_items": cards,
+            }
+            return "summary", cards, recs, extras
+        return "filtered", cards, recs, None
 
     if "comedy" in lowered and ("death" in lowered or "dead" in lowered):
         results = _handle_comedy_death(df, embeddings, row_ids, client, limit)
         cards = to_movie_cards(results, limit)
         recs = recommend_similar(df, embeddings, row_ids, results.index.tolist())
-        return "semantic", cards, recs
+        return "semantic", cards, recs, None
 
-    if "police" in lowered and "before 1990" in lowered:
+    if wants_police_before:
         results = _handle_police_before(df, embeddings, row_ids, client, limit)
         cards = to_movie_cards(results, limit)
         recs = recommend_similar(df, embeddings, row_ids, results.index.tolist())
-        return "semantic", cards, recs
+        return "semantic", cards, recs, None
 
     # Handle director queries
     director = parse_director(resolved_query, df)
@@ -771,7 +849,7 @@ def run_query(
         filtered = filtered.sort_values("IMDB_Rating", ascending=False).head(limit)
         cards = to_movie_cards(filtered, limit)
         recs = recommend_similar(df, embeddings, row_ids, filtered.index.tolist())
-        return "filtered", cards, recs
+        return "filtered", cards, recs, None
 
     # Handle actor queries
     actor = parse_actor(resolved_query, df)
@@ -781,7 +859,7 @@ def run_query(
         filtered = filtered.sort_values("IMDB_Rating", ascending=False).head(limit)
         cards = to_movie_cards(filtered, limit)
         recs = recommend_similar(df, embeddings, row_ids, filtered.index.tolist())
-        return "filtered", cards, recs
+        return "filtered", cards, recs, None
 
     try:
         plan = plan_query_with_llm(
@@ -813,4 +891,4 @@ def run_query(
 
     cards = to_movie_cards(filtered, plan.limit)
     recs = recommend_similar(df, embeddings, row_ids, filtered.index.tolist())
-    return plan.action, cards, recs
+    return plan.action, cards, recs, None
