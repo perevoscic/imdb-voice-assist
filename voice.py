@@ -19,9 +19,20 @@ def clean_text_for_speech(text: str) -> str:
     text = re.sub(r'!\[.*?\]\(.*?\)', '', text)
     text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
     
+    # Expand IMDb and Meta score line for better reading
+    # Pattern: IMDb: 8.4 | Meta: 80.0 -> IMDb rating 8.4. Meta score 80.0.
+    text = re.sub(r'IMDb:\s*([\d.]+)\s*\|\s*Meta:\s*([\d.]+)', r'IMDb rating \1. Meta score \2.', text, flags=re.IGNORECASE)
+    
+    # Replace remaining vertical bars with a period for clearer speech separation
+    text = text.replace('|', '.')
+
+
+    # Replace <br> with a period and newline to ensure pauses between lines
+    text = re.sub(r'<(?:br|hr)[^>]*/?>', '.\n', text, flags=re.IGNORECASE)
+    
     # Remove all HTML tags but keep their text content
-    # First remove self-closing tags like <img>, <br>, <hr>
-    text = re.sub(r'<(?:img|br|hr)[^>]*/?>', '', text, flags=re.IGNORECASE)
+    # First remove self-closing tags like <img> (br/hr already handled)
+    text = re.sub(r'<img[^>]*/?>', '', text, flags=re.IGNORECASE)
     # Remove opening tags with attributes (like <div style='...'>) 
     text = re.sub(r'<[a-z][a-z0-9]*[^>]*>', '', text, flags=re.IGNORECASE)
     # Remove closing tags

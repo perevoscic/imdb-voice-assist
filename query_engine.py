@@ -61,7 +61,7 @@ def _clean_json(text: str) -> str:
 
 
 def parse_top_n(query: str, default: int = 10) -> int:
-    match = re.search(r"top\s+(\d+)", query.lower())
+    match = re.search(r"\btop\s+(\d+)", query.lower())
     if match:
         return int(match.group(1))
     return default
@@ -887,7 +887,22 @@ def run_query(
     resolved_query = resolve_references(client, query, conversation_history or [])
     
     lowered = resolved_query.lower()
+
+    # Determine if this is a summary request
+    wants_summary = any(term in lowered for term in ["summary", "summaries", "summarize", "plot", "plots"])
+
+    def _wrap_result(action, cards, recs, extras=None):
+        if wants_summary and cards and action != "compound":
+            if extras is None:
+                extras = {}
+            if "summary_items" not in extras:
+                extras["summary_items"] = cards
+                extras["summary_title"] = "Movie Plots"
+            return "summary", cards, recs, extras
+        return action, cards, recs, extras
+
     limit = limit_override if limit_override is not None else parse_top_n(resolved_query, default=10)
+    limit += 1  # Fetch one extra to support "Load more" check
     actor = parse_actor(resolved_query, df)
 
     # Actor-specific flow with gross/IMDb constraints and role preference.
@@ -911,14 +926,14 @@ def run_query(
                 "assumed_default": role_pref is None,
             }
         }
-        return "filtered", cards, recs, extras
+        return _wrap_result("filtered", cards, recs, extras)
 
     title_match = find_title_match(df, resolved_query)
     if title_match and ("release" in lowered or "released" in lowered):
         results = df[df["Series_Title"] == title_match].head(1)
         cards = to_movie_cards(results, 1)
         recs = recommend_similar(df, embeddings, row_ids, results.index.tolist())
-        return "filtered", cards, recs, None
+        return _wrap_result("filtered", cards, recs, None)
 
     # Handle title keyword searches like "all Godfather movies", "Matrix films", etc.
     title_keyword = find_title_keyword(resolved_query)
@@ -930,7 +945,7 @@ def run_query(
             results = results.sort_values("IMDB_Rating", ascending=False).head(title_limit)
             cards = to_movie_cards(results, title_limit)
             recs = recommend_similar(df, embeddings, row_ids, results.index.tolist())
-            return "filtered", cards, recs, None
+            return _wrap_result("filtered", cards, recs, None)
 
     year_start, year_end = parse_years(query)
     wants_spielberg_scifi = (
@@ -938,7 +953,7 @@ def run_query(
     )
     wants_police_before = _matches_police_before(lowered, year_start, year_end)
     wants_superhero = _matches_superhero(lowered)
-    wants_summary = any(term in lowered for term in ["summary", "summaries", "summarize", "plot", "plots"])
+    # wants_summary defined at top of function
 
     if wants_spielberg_scifi and wants_police_before and wants_summary:
         spielberg_df = _handle_spielberg_scifi(df, limit)
@@ -962,7 +977,7 @@ def run_query(
         filtered = filtered.sort_values("Meta_score", ascending=False).head(limit)
         cards = to_movie_cards(filtered, limit)
         recs = recommend_similar(df, embeddings, row_ids, filtered.index.tolist())
-        return "filtered", cards, recs, None
+        return _wrap_result("filtered", cards, recs, None)
 
     genre = parse_genre(query)
     if genre and "imdb" in lowered and "rating" in lowered and year_start and year_end:
@@ -973,7 +988,7 @@ def run_query(
         filtered = filtered.sort_values("IMDB_Rating", ascending=False).head(limit)
         cards = to_movie_cards(filtered, limit)
         recs = recommend_similar(df, embeddings, row_ids, filtered.index.tolist())
-        return "filtered", cards, recs, None
+        return _wrap_result("filtered", cards, recs, None)
 
     if genre and "meta score" in lowered and "imdb" in lowered:
         meta_threshold = parse_threshold(query, "meta score")
@@ -986,19 +1001,19 @@ def run_query(
         filtered = filtered.sort_values("IMDB_Rating", ascending=False).head(limit)
         cards = to_movie_cards(filtered, limit)
         recs = recommend_similar(df, embeddings, row_ids, filtered.index.tolist())
-        return "filtered", cards, recs, None
+        return _wrap_result("filtered", cards, recs, None)
 
     if "top directors" in lowered and "gross" in lowered and "twice" in lowered:
         results = _handle_top_directors(df, limit)
         cards = to_movie_cards(results, limit)
         recs = recommend_similar(df, embeddings, row_ids, results.index.tolist())
-        return "filtered", cards, recs, None
+        return _wrap_result("filtered", cards, recs, None)
 
     if "over 1m votes" in lowered or "over 1m" in lowered:
         results = _handle_low_gross_high_votes(df, limit)
         cards = to_movie_cards(results, limit)
         recs = recommend_similar(df, embeddings, row_ids, results.index.tolist())
-        return "filtered", cards, recs, None
+        return _wrap_result("filtered", cards, recs, None)
 
     if wants_spielberg_scifi:
         results = _handle_spielberg_scifi(df, limit)
@@ -1009,20 +1024,20 @@ def run_query(
                 "summary_title": "Summaries of Steven Spielberg’s top-rated sci-fi movies",
                 "summary_items": cards,
             }
-            return "summary", cards, recs, extras
-        return "filtered", cards, recs, None
+            return _wrap_result("summary", cards, recs, extras)
+        return _wrap_result("filtered", cards, recs, None)
 
     if "comedy" in lowered and ("death" in lowered or "dead" in lowered):
         results = _handle_comedy_death(df, embeddings, row_ids, client, limit)
         cards = to_movie_cards(results, limit)
         recs = recommend_similar(df, embeddings, row_ids, results.index.tolist())
-        return "semantic", cards, recs, None
+        return _wrap_result("semantic", cards, recs, None)
 
     if wants_police_before:
         results = _handle_police_before(df, embeddings, row_ids, client, limit)
         cards = to_movie_cards(results, limit)
         recs = recommend_similar(df, embeddings, row_ids, results.index.tolist())
-        return "semantic", cards, recs, None
+        return _wrap_result("semantic", cards, recs, None)
 
     if wants_superhero:
         allowed_ids = None
@@ -1041,7 +1056,7 @@ def run_query(
         results = semantic_rank(df, embeddings, row_ids, query_vector, limit, allowed_ids)
         cards = to_movie_cards(results, limit)
         recs = recommend_similar(df, embeddings, row_ids, results.index.tolist())
-        return "semantic", cards, recs, None
+        return _wrap_result("semantic", cards, recs, None)
 
     # Handle director queries
     director = parse_director(resolved_query, df)
@@ -1050,7 +1065,7 @@ def run_query(
         filtered = filtered.sort_values("IMDB_Rating", ascending=False).head(limit)
         cards = to_movie_cards(filtered, limit)
         recs = recommend_similar(df, embeddings, row_ids, filtered.index.tolist())
-        return "filtered", cards, recs, None
+        return _wrap_result("filtered", cards, recs, None)
 
     # Handle actor queries
     if actor:
@@ -1059,7 +1074,7 @@ def run_query(
         filtered = filtered.sort_values("IMDB_Rating", ascending=False).head(limit)
         cards = to_movie_cards(filtered, limit)
         recs = recommend_similar(df, embeddings, row_ids, filtered.index.tolist())
-        return "filtered", cards, recs, None
+        return _wrap_result("filtered", cards, recs, None)
 
     try:
         plan = plan_query_with_llm(
@@ -1072,8 +1087,7 @@ def run_query(
     except Exception:
         plan = QueryPlan(action="filter_sort", filters=[], sort=[], limit=limit)
 
-    if limit_override is not None:
-        plan.limit = limit
+    plan.limit = limit
 
     filtered = df
     if plan.filters:
@@ -1094,4 +1108,4 @@ def run_query(
 
     cards = to_movie_cards(filtered, plan.limit)
     recs = recommend_similar(df, embeddings, row_ids, filtered.index.tolist())
-    return plan.action, cards, recs, None
+    return _wrap_result(plan.action, cards, recs, None)

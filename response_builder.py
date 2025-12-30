@@ -186,7 +186,7 @@ def _render_summaries(items: List[dict], title: str, note: Optional[str] = None)
             return "Not available"
         return str(value)
 
-    def _shorten(text: Optional[str], limit: int = 260) -> str:
+    def _shorten(text: Optional[str], limit: int = 200) -> str:
         if not text:
             return "Not available"
         text = str(text).strip()
@@ -198,22 +198,36 @@ def _render_summaries(items: List[dict], title: str, note: Optional[str] = None)
         return text[:cutoff].rstrip() + "..."
 
     parts: List[str] = [
-        "<div style='margin-bottom:18px;'>"
+        "<div style='margin-bottom:20px;'>"
         f"<h4 style='margin:0 0 6px 0;'>{_fmt(title)}</h4>"
     ]
     if note:
         parts.append(
-            f"<div style='color:#9ca3af;font-size:13px;margin-bottom:8px;'>{_fmt(note)}</div>"
+            f"<div style='color:#9ca3af;font-size:13px;margin-bottom:12px;'>{_fmt(note)}</div>"
         )
+    
+    # Grid container
+    parts.append("<div style='display:grid; grid-template-columns: 1fr 1fr; gap: 20px;'>")
+
     for movie in items:
         year = movie.get("Released_Year")
         if isinstance(year, float) and year.is_integer():
             year = int(year)
-        summary = _shorten(movie.get("Overview"))
-        parts.append(
-            "<div style='margin-bottom:12px;'>"
-            f"<b>{_fmt(movie.get('Series_Title'))} ({_fmt(year)})</b> — {summary}"
+        summary = _shorten(movie.get("Overview"), limit=200)
+        
+        poster_url = _fmt(movie.get('Poster_Link'))
+        
+        card = (
+            "<div style='display:flex;gap:14px;align-items:start;background:var(--bg-tertiary);padding:16px;border-radius:12px;box-shadow:0 4px 6px rgba(0,0,0,0.05);'>"
+            f"<img src='{poster_url}' width='70' style='border-radius:6px;object-fit:cover;aspect-ratio:2/3;flex-shrink:0;'>"
+            "<div>"
+            f"<strong style='display:block;margin-bottom:4px;font-size:1.05em;'>{_fmt(movie.get('Series_Title'))} ({_fmt(year)})</strong>"
+            f"<div style='font-size:0.92em;opacity:0.9;line-height:1.5;'>{summary}</div>"
+            "</div>"
             "</div>"
         )
-    parts.append("</div>")
+        parts.append(card)
+        
+    parts.append("</div>") # Close grid
+    parts.append("</div>") # Close outer wrapper
     return "".join(parts)

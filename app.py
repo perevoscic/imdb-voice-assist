@@ -750,7 +750,7 @@ def main():
             if limit_override is not None
             else parse_top_n(query, default=DEFAULT_RESULT_LIMIT)
         )
-        display_results = results
+        display_results = results[:current_limit]
         display_recommendations = recommendations
         display_extras = extras
 
@@ -796,7 +796,11 @@ def main():
         if tone_nudge:
             response_text = f"{tone_nudge}\n\n{response_text}"
 
-        can_load_more = bool(display_extras is None and results and len(results) >= current_limit)
+        can_load_more = bool(display_extras is None and results and len(results) > current_limit)
+        
+        # If the user explicitly asked for a top N list (e.g. "Top 5 movies"), treat it as a hard limit
+        if parse_top_n(query, default=-1) != -1:
+            can_load_more = False
         st.session_state.last_query = query
         st.session_state.last_limit = current_limit
         
@@ -837,7 +841,7 @@ def main():
                 st.rerun()
 
         # Render results
-        render_results_section(results, recommendations)
+        render_results_section(results[:current_limit] if results else [], recommendations)
 
 
 if __name__ == "__main__":
